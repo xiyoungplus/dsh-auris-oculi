@@ -104,6 +104,20 @@ python -c "import ast,glob; [ast.parse(open(f,encoding='utf-8').read()) for f in
 
 ---
 
+### 改名后为什么有些名字没变
+
+插件叫 `dsh-auris-oculi`，但你会看到 `XIYOUNG_*` 环境变量、
+`/xiyoungtools/*` 路由、`~/.dsh/xiyoungtools/` 数据目录。
+
+**这些是刻意保留的**：
+- 数据目录里有用户不可再生的标注，改路径等于删数据
+- 路由和工具名被前端和调用方写死
+- 环境变量在用户的 `config.json` 里
+
+**不要「顺手」把它们改统一**，那会破坏兼容性。详见 `HANDOVER.md`。
+
+---
+
 ## 代码约定
 
 ### 注释写「为什么」，不写「是什么」

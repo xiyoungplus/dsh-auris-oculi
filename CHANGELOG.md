@@ -5,6 +5,33 @@
 
 ---
 
+## 0.20.3
+
+**改名为 `dsh-auris-oculi`，补开源相关文件和许可证。**
+
+原名 `xiyoungtools` 不好搜、也不说明用途。新名字来自拉丁语
+auris（耳）+ oculi（眼）—— 给 agent 装上耳朵和眼睛。
+
+**已改**：npm 包名、DSH 插件 id、界面显示名、文档标题。
+
+**故意没改**（兼容性，详见 `HANDOVER.md` 的「改名的兼容性决定」）：
+
+- 数据目录 `~/.dsh/xiyoungtools/`（里面有 1212 条不可再生标注）
+- 路由前缀 `/xiyoungtools/*`（前端 48 处引用）
+- 环境变量 `XIYOUNG_*`（用户 config.json 在用）
+
+**许可证**：LICENSE 从 MIT 改为 **GPL-3.0**。`package.json` 的 license
+字段、两份 README 的许可章节同步更新。
+
+**新增**：
+
+- `CONTRIBUTING.md`：怎么跑测试、哪些已知问题不用报、三条不能碰的硬编码规则
+- `.github/ISSUE_TEMPLATE/`：bug 报告 + 「数字不对」专用模板
+- `.gitignore` / `.npmignore`
+- `check_after_restart.py`：重启后自检（编码修复是否生效、后端是否可用）
+
+---
+
 ## 0.20.2
 
 修掉工具回执中文乱码。

@@ -266,6 +266,21 @@ Verified against pure tones at 16 kHz:
 - **Jitter needs multiple samples**: a single clip's jitter figure may just be noise
 - **Speaker tools need long clips**: below 4 seconds, "not the same person" is unreliable; 8 seconds is where it stabilises
 - **Emotion classification is out of scope**: 34.3% on real speech against a 14.3% baseline
+
 ## License
 
-MIT
+**GPL-3.0-or-later**
+
+In short:
+
+- **Use**: free for personal, commercial, any purpose
+- **Modify**: go ahead, private changes need no disclosure
+- **Distribute**: if you ship a modified version (publish, sell, bundle into a product),
+  it must also be open-sourced under GPL-3.0
+
+No fee, no need to contact us. Full text in `LICENSE`.
+
+> Why GPL: every number and conclusion in this plugin came from measurement.
+> A lot of time went into establishing what works and what does not.
+> GPL keeps improvements flowing back instead of being closed off,
+> so the next person does not have to rediscover the same limits.
