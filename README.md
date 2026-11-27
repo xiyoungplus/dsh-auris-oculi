@@ -143,7 +143,6 @@ npm install -g dsh-auris-oculi
 | [实现细节](docs/DETAIL.md) | 算法怎么做的、阈值怎么定的 |
 | [声纹可靠性实测](docs/speaker-reliability.md) | 24 说话人的完整数据 |
 | [情绪可行性实测](docs/emotion-findings.md) | 六套语料的测试结论 |
-| [踩坑清单](docs/PITFALLS.md) | 改代码前该知道的事、静默失败、测试本身的坑 |
 | [开发与贡献](CONTRIBUTING.md) | 怎么跑测试、哪些问题不用报 |
 | [交接书](docs/HANDOVER.md) | 状态、失败结论、踩过的坑 |
 | [更新日志](CHANGELOG.md) | 每个版本做了什么 |
