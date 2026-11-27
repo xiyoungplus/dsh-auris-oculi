@@ -42,6 +42,16 @@ DSH 插件：左侧栏一个入口，装一组**全部在本机运行**的小工
 
 ## 安装
 
+### 从 npm（推荐）
+
+```bash
+npm install -g dsh-auris-oculi
+```
+
+然后在 DSH 里启用（Plugins 面板，或写进 profile 的 `dsh.profile.bundles`）。
+
+### 从本地目录（开发用）
+
 DSH → **Plugins → Add plugin** → 选这个目录。
 
 装好后左侧栏会出现入口。插件本身没有构建步骤，改代码刷新就生效。
@@ -917,6 +927,11 @@ batches/   批量导入结果
 - **微颤需要多样本才有意义**：单条录音的抖动数字可能只是噪声
 
 ---
+
+## 发布
+
+- npm：https://www.npmjs.com/package/dsh-auris-oculi
+- GitHub：https://github.com/xiyoungplus/dsh-auris-oculi
 
 ## 参与
 

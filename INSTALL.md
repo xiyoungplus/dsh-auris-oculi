@@ -10,11 +10,19 @@
 
 两种装法。
 
-### A. DSH 界面（推荐）
+### A. 从 npm（推荐）
+
+```bash
+npm install -g dsh-auris-oculi
+```
+
+然后在 DSH 的 Plugins 面板里启用。
+
+### B. DSH 界面
 
 DSH → **Plugins → Add plugin** → 选插件文件夹。
 
-### B. 手动 link（开发用，改代码立刻生效）
+### C. 手动 link（开发用，改代码立刻生效）
 
 ```powershell
 $prof = "$env:USERPROFILE\.dsh\profiles\desktop"

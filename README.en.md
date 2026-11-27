@@ -45,6 +45,16 @@ same-speaker 0.79 vs different-speaker 0.75 — a gap of 0.04.
 
 ## Install
 
+### From npm (recommended)
+
+```bash
+npm install -g dsh-auris-oculi
+```
+
+Then enable it in DSH (Plugins panel, or add it to the profile's `dsh.profile.bundles`).
+
+### From a local directory (development)
+
 DSH → **Plugins → Add plugin** → pick this directory.
 
 The sidebar entry appears once enabled. There is no build step — edit and refresh.
