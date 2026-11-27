@@ -1,0 +1,26 @@
+# npm 发布忽略规则
+#
+# package.json 的 files 字段已经做了白名单，这里只列额外的排除项。
+# 白名单 + 黑名单同时生效时，黑名单优先。
+
+# 测试数据
+testdata/
+
+# 开发产物
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+
+# 打包产物
+*.tgz
+dist/
+
+# 模型（用户自己下）
+models/*.onnx
+models/*.pt
+
+# 本地配置
+.env
+.env.*
+config.local.json

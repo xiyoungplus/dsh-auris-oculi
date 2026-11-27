@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Auris Oculi",
+    "description": "An extensible local toolbox. The first tool watches a video frame by frame: link → frames and contact sheets → local Ollama vision model → report."
+  }
+}

@@ -1,0 +1,42 @@
+# 忽略规则
+
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 打包产物
+*.tgz
+dist/
+
+# 测试数据（44 MB，不入库）
+testdata/
+
+# 说话人模型（27 MB，用户自己下）
+models/*.onnx
+models/*.pt
+models/*.bin
+
+# 运行时产物
+*.log
+tmp/
+.tmp/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 本地配置（可能含 API key）
+config.local.json
+.env
+.env.*

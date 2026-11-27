@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Auris Oculi 感知工具箱",
+    "description": "可扩展的本地小工具集合，先内置视频逐帧观看：链接 → 抽帧拼图 → 本机 Ollama 视觉模型 → 报告。"
+  }
+}

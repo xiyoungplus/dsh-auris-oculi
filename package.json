@@ -1,0 +1,110 @@
+{
+  "name": "dsh-auris-oculi",
+  "version": "0.20.2",
+  "description": "给 agent 装上耳朵和眼睛：视频逐帧观看、片段截取、韵律与频谱测量、声纹比对、说话人聚类/分离、变化点检测。全部本机运行，不联网。",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "check": "node --check index.js && node --check client.js",
+    "smoke": "node scripts/smoke.mjs",
+    "audit": "node scripts/audit-config.mjs",
+    "regress": "python regression_content_class.py",
+    "test": "node scripts/smoke.mjs && node scripts/test-host.mjs && node scripts/audit-config.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "video_watch.py",
+    "list_models.py",
+    "prosody.py",
+    "batch_import.py",
+    "speaker_cluster.py",
+    "speaker_compare.py",
+    "regression_content_class.py",
+    "speaker_diarize.py",
+    "benchmark.py",
+    "cordis.patch.yml",
+    "scripts",
+    "locale",
+    "docs",
+    "models",
+    "icon.svg",
+    "README.md",
+    "README.en.md",
+    "INSTALL.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "HANDOVER.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "audio",
+    "video",
+    "speech",
+    "prosody",
+    "speaker",
+    "voiceprint",
+    "asr",
+    "local",
+    "offline",
+    "privacy"
+  ],
+  "author": "XiYoung",
+  "license": "GPL-3.0-or-later",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    },
+    "compatibility": {
+      "dsh": ">=0.2.1-rc.2 <0.3.0-0",
+      "profiles": [
+        "desktop",
+        "web"
+      ]
+    }
+  },
+  "dshGo": {
+    "v": 1,
+    "minApp": "1.0.9",
+    "title": {
+      "zh": "Auris Oculi 感知工具箱",
+      "en": "Auris Oculi"
+    },
+    "description": {
+      "zh": "给 agent 装上耳朵和眼睛：视频逐帧观看、片段截取、韵律与频谱测量、声纹比对、说话人聚类/分离、变化点检测、批量导入、缓存清理。全部本机运行。",
+      "en": "Ears and eyes for your agent: video frame watching, clipping, prosody and spectral measurement, voiceprint comparison, speaker clustering/diarization, change detection, batch import and cache cleanup. All local."
+    },
+    "icon": "icon.svg"
+  },
+  "homepage": "https://github.com/xiyoung/dsh-auris-oculi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiyoung/dsh-auris-oculi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xiyoung/dsh-auris-oculi/issues"
+  }
+}

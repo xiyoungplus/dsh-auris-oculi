@@ -1,0 +1,4 @@
+# Auris Oculi 感知工具箱 bundle patch: inserts the Host half into the profile layer stack.
+- insert:
+    - id: dsh-auris-oculi
+      name: 'dsh-auris-oculi'
