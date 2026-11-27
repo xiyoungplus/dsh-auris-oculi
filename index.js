@@ -3319,7 +3319,8 @@ function downsampleCurves(curves, step) {
   if (stride === 1) return curves
   const pick = (arr) => (Array.isArray(arr) ? arr.filter((_, i) => i % stride === 0) : arr)
   const out = { hop: (Number(curves.hop) || 0.01) * stride, refHz: curves.refHz, stride }
-  for (const key of ['times', 'f0', 'semitone', 'jitter', 'db', 'state']) {
+  for (const key of ['times', 'f0', 'semitone', 'pitchOscillation',
+    'pitchOscillationRate', 'db', 'state']) {
     if (curves[key] !== undefined) out[key] = pick(curves[key])
   }
   return out
@@ -3553,7 +3554,9 @@ function prosodyToolResult(job, includeCurves, curveStep = 1, includeRawSpeaker 
       times: curves.times,
       f0: curves.f0,
       semitone: curves.semitone,
-      jitter: curves.jitter,
+      pitchOscillation: curves.pitchOscillation,
+      // 过零率是判据本身，前端也拿得到——藏起来就成黑箱了
+      pitchOscillationRate: curves.pitchOscillationRate,
       db: curves.db,
       state: curves.state
     } : null,
@@ -3662,7 +3665,25 @@ const prosodyAnalyzeTool = {
       lines.push('基频中位 ' + (s.f0Median || 0).toFixed(1) + ' Hz，音域 ' + (s.semitoneRange || 0).toFixed(1) + ' 半音')
       lines.push('浊音 ' + Math.round((s.voicedRatio || 0) * 100) + '% · 清音 ' + Math.round((s.unvoicedRatio || 0) * 100)
         + '% · 静音 ' + Math.round((s.silenceRatio || 0) * 100) + '%')
-      lines.push('微颤中位 ' + (s.jitterMedian || 0).toFixed(2) + ' 半音')
+      // 2026-11-27：jitterPeaks 已删，改成时段 + 过零率。
+      // 标签写成「音高振荡」，不写「抖」——数字给现象，判断留给读的人。
+      if (s.pitchOscillationMedian !== undefined && s.pitchOscillationMedian !== null) {
+        lines.push('音高振荡（3-12 Hz）中位 ' + Number(s.pitchOscillationMedian).toFixed(2) + ' 半音')
+        const spans = s.pitchOscillationSpans || []
+        for (const sp of spans.slice(0, 4)) {
+          lines.push('  ' + sp.start + '–' + sp.end + 's 峰值 ' + sp.peak + ' 半音'
+            + (sp.rate ? '（来回 ' + sp.rate + ' 次/秒）' : ''))
+        }
+      } else if (s.pitchOscillationNote) {
+        lines.push('音高振荡：' + s.pitchOscillationNote)
+      }
+      // 滑音是独立轨道，可以和振荡重叠
+      const glides = s.pitchGlides || []
+      for (const g of glides.slice(0, 4)) {
+        lines.push('音高滑移 ' + g.start + '–' + g.end + 's '
+          + (g.direction === 'down' ? '↓' : '↑') + g.semitones + ' 半音 / '
+          + g.seconds + ' 秒')
+      }
       // 转写状态：让"没出字"和"环境坏了"可区分
       if (value.transcriptStatus && value.transcriptStatus !== 'ok') {
         const statusText = {
@@ -4478,8 +4499,13 @@ function importBatchLabels(job, payload, dataset) {
         f0Median: s.f0Median ?? null,
         semitoneRange: s.semitoneRange ?? null,
         trendSemitone: s.trendSemitone ?? null,
-        jitterMedian: s.jitterMedian ?? null,
-        jitterP90: s.jitterP90 ?? null,
+        pitchOscillationMedian: s.pitchOscillationMedian ?? null,
+        pitchOscillationP90: s.pitchOscillationP90 ?? null,
+        pitchOscillationSpans: s.pitchOscillationSpans ?? [],
+        pitchOscillationRateMedian: s.pitchOscillationRateMedian ?? null,
+        pitchOscillationNote: s.pitchOscillationNote ?? null,
+        // 滑音和振荡是两条独立轨道，可以重叠
+        pitchGlides: s.pitchGlides ?? [],
         voicedRatio: s.voicedRatio ?? null,
         silenceRatio: s.silenceRatio ?? null,
         dbMedian: s.dbMedian ?? null,
@@ -6447,7 +6473,8 @@ export function apply(ctx) {
       const features = {}
       if (summary) {
         for (const k of ['f0Median', 'semitoneRange', 'trendSemitone',
-          'jitterMedian', 'jitterP90', 'voicedRatio', 'silenceRatio', 'dbMedian']) {
+          'pitchOscillationMedian', 'pitchOscillationP90',
+          'voicedRatio', 'silenceRatio', 'dbMedian']) {
           if (summary[k] !== undefined && summary[k] !== null) features[k] = summary[k]
         }
         if (summary.duration) features.duration = summary.duration

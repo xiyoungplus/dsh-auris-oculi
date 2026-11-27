@@ -78,7 +78,11 @@ def _require_deps():
 # 而不是抛一个 ModuleNotFoundError 让调用方去猜。
 _require_deps()
 
-import numpy as np  # noqa: E402
+import numpy as np
+try:
+    import scipy.signal as _sp_signal
+except Exception:  # scipy 缺失时振荡测量降级为不可用
+    _sp_signal = None  # noqa: E402
 
 
 
@@ -383,7 +387,7 @@ def attach_segments(segments, a, times):
         return []
     f0 = a["f0"]
     st = a["semitone"]
-    jt = a["jitter"]
+    jt = a["pitchOscillation"]
     db = a["db"]
     out = []
     for seg in segments:
@@ -399,8 +403,8 @@ def attach_segments(segments, a, times):
             item["semitoneMedian"] = round(float(np.median(seg_st)), 2) if len(seg_st) else None
             seg_jt = jt[m]
             seg_jt = seg_jt[~np.isnan(seg_jt)]
-            item["jitterMedian"] = round(float(np.median(seg_jt)), 2) if len(seg_jt) else None
-            item["jitterMax"] = round(float(np.max(seg_jt)), 2) if len(seg_jt) else None
+            item["pitchOscillationMedian"] = round(float(np.median(seg_jt)), 3) if len(seg_jt) else None
+            item["pitchOscillationMax"] = round(float(np.max(seg_jt)), 3) if len(seg_jt) else None
             item["dbMedian"] = round(float(np.median(db[m])), 1) if m.any() else None
         out.append(item)
     return out
@@ -901,25 +905,117 @@ def analyze(y, sr, hop_s=0.01, fmin=75.0, fmax=400.0):
         m3 = ~np.isnan(local_ref)
         drift[m3] = 12.0 * np.log2(local_ref[m3] / ref_hz)
 
-    # 微颤只对浊音帧有意义。
+    # ------------------------------------------------------------------
+    # 音高振荡（旧名 jitter / 微颤）。2026-11-27 重做。
     #
-    # 旧写法对每一帧都算，邻域里的浊音帧会被"借"给 unvoiced 帧用，
-    # 于是气声/清音段照样报出一个抖动值——实测 1.30-1.34s 的 unvoiced 帧
-    # 报了 2.94/3.78/3.99，还被选成"抖得最明显的位置"。
-    # 那根本不是抖，是"这一段没有稳定周期"。
-    # 现在：非浊音帧直接留 NaN，邻域也只取浊音帧。
-    jitter = np.full(len(f0), np.nan)
+    # 旧实现：0.11 秒窗口里的半音 std。
+    #   问题：这个窗口和「语调」是同一个尺度。真人微颤 4-12 Hz，
+    #   语调滑动 1-3 Hz，在 0.11 秒（分辨率约 9 Hz）里根本分不开。
+    #   实测：真实录音里旧 jitter 前 10% 的帧，80% 落在「窗口内单调滑动」。
+    #   它测的不是抖，是「语调在动」。
+    #
+    # 新实现：3-12 Hz 带通后取 RMS，窗口 0.5 秒。
+    #   实测分离比：带通 176× vs 旧做法 27×（六条已知答案的合成音频）。
+    #   窗口必须 >= 0.5 秒：频率分辨率 ≈ 1/窗口，短了分不开 2 Hz 和 5 Hz。
+    #
+    # 四层闸门，任一不过就留 NaN：
+    #   1. 本帧 voiced —— 噪声的 f0 是随机的，带通后 RMS 高达 1.31，
+    #      比真微颤 0.73 还高。不给这道闸，安静的录音会被判成最抖。
+    #   2. 窗口内无 >6 半音阶跃 —— 管跨八度断口（实测残差会到 1.0）。
+    #   3. 窗口覆盖率 >= 80% —— 管大片断裂。
+    #   4. 过零率 >= 4 Hz —— 管滑音。
+    #      滑音是单调下降（过零 0 次），微颤是来回（5 Hz → 8 次/秒）。
+    #      实测滑音中位 0.0 Hz，微颤中位 8.0 Hz，完全分开。
+    #      但滑音**两端拐弯处**过零会到 10-14 Hz，所以判据用分位数不用峰值。
+    # ------------------------------------------------------------------
+    OSC_LO, OSC_HI = 3.0, 12.0      # Hz，微颤频带
+    OSC_HALF = 25                    # ±25 帧 = 0.5 秒窗
+    OSC_MIN_ZC = 4.0                 # 过零率下限（Hz）
+
+    pitch_osc = np.full(len(f0), np.nan)
+    pitch_osc_rate = np.full(len(f0), np.nan)
     voiced_mask = ~np.isnan(f0)
-    win = 5
+
+    # 闸门 0：整段音域极窄且 f0 贴着搜索下限 → 机械声/纯音。
+    #
+    # 为什么需要这道闸：f0 追踪在噪声上会被钉在下限附近来回抖
+    # （实测 car.wav：2819 个浊音帧只有 14 个不同值，min=75.0 max=84.2），
+    # 这个「钉死 + 小抖动」在 3-12 Hz 带通后成了持续振荡，
+    # 报出 0.0999 的假微颤。
+    #
+    # 判据和 _detect_nonverbal 里的 narrow 同源：
+    # 音域 < 3 半音 且 贴下限，说明没有真实的音高变化，
+    # 此时算振荡没有意义。
+    _voiced_vals = f0[voiced_mask]
+    _osc_disabled = False
+    if len(_voiced_vals) >= 20:
+        _range_st = 12.0 * np.log2(
+            float(np.max(_voiced_vals)) / max(1e-6, float(np.min(_voiced_vals))))
+        try:
+            _fmin = cfg_num("XIYOUNG_AUDIO_F0_MIN", 75.0)
+        except Exception:
+            _fmin = 75.0
+        _med = float(np.median(_voiced_vals))
+        if _range_st < 3.0 and _med <= _fmin * 1.15:
+            _osc_disabled = True
+
+    # 预先算半音序列（相对全片中位）
+    st_seq = np.full(len(f0), np.nan)
+    if ref_hz > 0:
+        mst = ~np.isnan(f0)
+        st_seq[mst] = 12.0 * np.log2(f0[mst] / ref_hz)
+
+    def _bandpass_rms_zc(vals, ts):
+        """返回 (rms, zero_cross_rate_hz, dur)。数据不够返回 (nan, 0, 0)。"""
+        v = ~np.isnan(vals)
+        if v.sum() < 10:
+            return np.nan, 0.0, 0.0
+        y = vals[v]
+        x = ts[v]
+        y = y - float(np.mean(y))
+        dt = (x[-1] - x[0]) / max(1, len(y) - 1)
+        if dt <= 0:
+            return np.nan, 0.0, 0.0
+        fs = 1.0 / dt
+        # 频率分辨率不够就放弃，宁可没值也不要给个假值
+        if fs < OSC_HI * 2.5:
+            return np.nan, 0.0, 0.0
+        try:
+            sos = _sp_signal.butter(
+                2, [OSC_LO / (fs / 2), min(OSC_HI, fs / 2 * 0.95) / (fs / 2)],
+                btype="band", output="sos")
+            f = _sp_signal.sosfiltfilt(sos, y)
+        except Exception:
+            return np.nan, 0.0, 0.0
+        rms = float(np.sqrt(np.mean(f ** 2)))
+        zc = int(np.sum(np.diff(np.sign(f)) != 0))
+        dur = float(x[-1] - x[0])
+        return rms, (zc / dur if dur > 0 else 0.0), dur
+
     for i in range(len(f0)):
+        if _osc_disabled:
+            break                                             # 闸门 0
         if not voiced_mask[i]:
+            continue                                          # 闸门 1
+        lo, hi = max(0, i - OSC_HALF), min(len(f0), i + OSC_HALF + 1)
+        seg = st_seq[lo:hi]
+        seg_t = times[lo:hi]
+        v = ~np.isnan(seg)
+        span = hi - lo
+        if span <= 0 or v.sum() < 0.8 * span:
+            continue                                          # 闸门 3
+        y = seg[v]
+        if len(y) < 3:
             continue
-        lo, hi = max(0, i - win), min(len(f0), i + win + 1)
-        seg = f0[lo:hi][voiced_mask[lo:hi]]
-        if len(seg) >= 3:
-            med = float(np.median(seg))
-            if med > 0:
-                jitter[i] = float(np.std(12.0 * np.log2(seg / med)))
+        if float(np.max(y) - np.min(y)) > 6.0:
+            continue                                          # 闸门 2（阶跃）
+        rms, zc_rate, dur = _bandpass_rms_zc(seg, seg_t)
+        if np.isnan(rms) or dur <= 0:
+            continue
+        pitch_osc_rate[i] = zc_rate
+        if zc_rate < OSC_MIN_ZC:
+            continue                                          # 闸门 4（滑音）
+        pitch_osc[i] = rms
 
     # 频谱特征：情绪分类比韵律特征更有用（见 spectral_features 的注释）
     try:
@@ -934,7 +1030,8 @@ def analyze(y, sr, hop_s=0.01, fmin=75.0, fmax=400.0):
         "times": times,
         "f0": f0,
         "semitone": semitone,
-        "jitter": jitter,
+        "pitchOscillation": pitch_osc,
+        "pitchOscillationRate": pitch_osc_rate,
         "db": db,
         "state": state,
         "ref_hz": ref_hz,
@@ -1531,8 +1628,8 @@ def mfcc_verdict(distance, scale=None):
 _STRENGTH_DIR = {
     "f0Median": +1,        # 音高升高
     "semitoneRange": +1,   # 音域变宽
-    "jitterMedian": +1,    # 微颤变大
-    "jitterP90": +1,
+    "pitchOscillationMedian": +1,   # 音高振荡变大
+    "pitchOscillationP90": +1,
     "dbMedian": +1,        # 响度变大（dB 是负值，越大越响）
     "voicedRatio": -1,     # 浊音比升高通常意味着更平稳（反向）
     "trendSemitone": 0,    # 走向无固定方向，只作描述
@@ -1621,8 +1718,8 @@ _FEATURE_CN = {
     "f0Median": "音高",
     "semitoneRange": "音域",
     "trendSemitone": "走向",
-    "jitterMedian": "微颤",
-    "jitterP90": "微颤峰值",
+    "pitchOscillationMedian": "音高振荡",
+    "pitchOscillationP90": "音高振荡峰值",
     "voicedRatio": "浊音比",
     "dbMedian": "响度",
 }
@@ -1658,8 +1755,8 @@ def load_baseline_from_labels(label_file):
     except Exception:
         return None
     items = data if isinstance(data, list) else data.get("labels") or data.get("items") or []
-    keys = ["f0Median", "semitoneRange", "trendSemitone", "jitterMedian",
-            "jitterP90", "voicedRatio", "dbMedian"]
+    keys = ["f0Median", "semitoneRange", "trendSemitone", "pitchOscillationMedian",
+            "pitchOscillationP90", "voicedRatio", "dbMedian"]
     vals = {k: [] for k in keys}
     n = 0
     for it in items:
@@ -1683,8 +1780,8 @@ def load_baseline_from_labels(label_file):
 
 def baseline_from_batch(records):
     """从批量分析结果算基线。records 是 [{features: {...}}, ...]。"""
-    keys = ["f0Median", "semitoneRange", "trendSemitone", "jitterMedian",
-            "jitterP90", "voicedRatio", "dbMedian"]
+    keys = ["f0Median", "semitoneRange", "trendSemitone", "pitchOscillationMedian",
+            "pitchOscillationP90", "voicedRatio", "dbMedian"]
     vals = {k: [] for k in keys}
     n = 0
     for r in records:
@@ -1859,7 +1956,7 @@ def _music_diagnose_from(a, summary, voiced, state, f0_span):
         rounded = _np.round(st_voiced).astype(int)
         vals, counts = _np.unique(rounded, return_counts=True)
         top4 = float(_np.sum(_np.sort(counts)[::-1][:4])) / len(rounded)
-        jit = summary.get("jitterMedian")
+        jit = summary.get("pitchOscillationMedian")
         # 只有"音高集中"且"微颤极小"才计分
         if top4 >= 0.55 and jit is not None and jit < 0.05:
             score += 1
@@ -1867,15 +1964,27 @@ def _music_diagnose_from(a, summary, voiced, state, f0_span):
                            % (top4 * 100))
 
     # b) 接近零的微颤：真人声永远有微颤，合成音/乐器的基频是"精确"的
-    jitter_med = summary.get("jitterMedian")
-    if jitter_med is not None and jitter_med < 0.02:
+    # 2026-11-27 重标：旧阈值 0.02 是给 0.11 秒 std 算的。
+    # 新算法（0.5 秒 3-12 Hz 带通 RMS）实测真人微颤 0.35-0.73，
+    # 合成音/乐器应该接近 0。阈值抬到 0.08。
+    # 微颤极小 → 像合成音/乐器。
+    # 两条证据任一条即可：
+    #   a) 量到了振荡值，且极小
+    #   b) 机械声（音域极窄 + 贴下限），振荡无法量，但可判定为可忽略
+    jitter_med = summary.get("pitchOscillationMedian")
+    negligible = summary.get("pitchOscillationNegligible") is True
+    if negligible:
         score += 1
-        reasons.append("微颤中位 %.3f 半音（真人声通常 >0.1，这个太精确）" % jitter_med)
+        reasons.append("整段音域极窄且基频贴下限，振荡可忽略（乐器/机械声特征）")
+    elif jitter_med is not None and jitter_med < 0.08:
+        score += 1
+        reasons.append("音高振荡中位 %.3f 半音（真人声通常 >0.2，这个太精确）" % jitter_med)
 
     # c) 音高跳变呈"级进"：音乐的音符间常是 1-2 个半音的整数倍跳变。
     #    同样要求微颤极小，否则真人声的语调起伏也会"落在整半音附近"。
-    _jit_c = summary.get("jitterMedian")
-    if len(voiced) >= 20 and _jit_c is not None and _jit_c < 0.05:
+    _jit_c = summary.get("pitchOscillationMedian")
+    _neg = summary.get("pitchOscillationNegligible") is True
+    if len(voiced) >= 20 and (_neg or (_jit_c is not None and _jit_c < 0.08)):
         diffs = _np.abs(_np.diff(12.0 * _np.log2(voiced / float(_np.median(voiced)))))
         big = diffs[diffs >= 1.0]
         if len(big) >= 5:
@@ -1908,7 +2017,7 @@ def detect_singing(a, summary):
     state = a["state"]
     duration = summary.get("duration") or 0.0
     voiced_ratio = summary.get("voicedRatio") or 0.0
-    jitter_med = summary.get("jitterMedian")
+    jitter_med = summary.get("pitchOscillationMedian")
 
     if duration < 5.0 or len(state) < 100:
         return None
@@ -1919,11 +2028,11 @@ def detect_singing(a, summary):
     # 三个条件：浊音极高 + 状态切换低 + 还有微颤（区别于乐器）
     if (voiced_ratio >= 0.90
             and switch_per_sec < 0.8
-            and jitter_med is not None and jitter_med >= 0.05):
+            and jitter_med is not None and jitter_med >= 0.15):
         return {
             "voicedRatio": round(voiced_ratio, 3),
             "switchPerSec": round(switch_per_sec, 2),
-            "jitterMedian": round(jitter_med, 3),
+            "pitchOscillationMedian": round(jitter_med, 3),
             "warning": ("这段可能是在唱歌而不是说话（浊音 %.0f%%、几乎不断句、仍有微颤）。"
                         "拿它当说话的语气样本会污染数据。" % (voiced_ratio * 100)),
         }
@@ -2490,11 +2599,185 @@ def summarize_changes(changes, duration):
     }
 
 
+def _osc_spans(osc, times, rates, min_sec=0.25, gap_sec=0.15):
+    """把连续的振荡帧合成时段。
+
+    2026-11-27 第一版的 bug：用 P75 作阈值，而纯微颤时 osc 分布很平
+    （实测 0.495-0.822），阈值卡在中间，高值帧被切成 20 个 1-3 帧的碎片，
+    全部小于 min_sec=0.25，结果一条时段都出不来。
+
+    修法两步：
+      1. 阈值仍用本段统计（不用跨库常数——设备差异会整体偏移），
+         但取「中位 + 半个 P90-中位跨度」这种更宽松的位置
+      2. 相邻碎片间隔 < gap_sec 就合并——微颤本来就是连续的，
+         中间掉一两帧到阈值下面不代表它停了
+
+    返回 [{start, end, seconds, peak, median, rate, frames}]。
+    rate 是过零率中位（判据本身，便于复核「为什么算振荡」）。
+    """
+    import numpy as _np
+    valid = ~_np.isnan(osc)
+    if not valid.any():
+        return []
+    vals = osc[valid]
+    med = float(_np.median(vals))
+    p90 = float(_np.percentile(vals, 90))
+    # 阈值放在中位和 P90 之间。纯微颤时两者都高，跨度小，阈值仍能切出大段；
+    # 混合信号时跨度大，阈值偏向高分位，只挑真正突出的部分。
+    thr = med + 0.5 * (p90 - med)
+
+    # 先找出所有达标帧，再按 gap 合并
+    idx = [i for i in range(len(osc)) if valid[i] and osc[i] >= thr]
+    if not idx:
+        return []
+
+    groups = []
+    cur = [idx[0]]
+    for k in idx[1:]:
+        if times[k] - times[cur[-1]] <= gap_sec:
+            cur.append(k)
+        else:
+            groups.append(cur)
+            cur = [k]
+    groups.append(cur)
+
+    spans = []
+    for g in groups:
+        i, j = g[0], g[-1]
+        dur = float(times[j] - times[i]) if j > i else 0.0
+        if dur < min_sec:
+            continue
+        seg = osc[i:j + 1]
+        rseg = rates[i:j + 1] if rates is not None else None
+        if rseg is not None:
+            rseg = rseg[~_np.isnan(rseg)]
+        spans.append({
+            "start": round(float(times[i]), 2),
+            "end": round(float(times[j]), 2),
+            "seconds": round(dur, 2),
+            "peak": round(float(_np.nanmax(seg)), 3),
+            "median": round(float(_np.nanmedian(seg)), 3),
+            "rate": round(float(_np.median(rseg)), 1) if rseg is not None and len(rseg) else None,
+            "frames": int(j - i + 1),
+        })
+    return spans
+
+
+def _pitch_glides(st, times, f0, min_semitones=3.0, min_sec=0.12,
+                   max_sec=1.2, step_sec=0.05):
+    """找出单调的大幅音高移动（滑音）。
+
+    2026-11-27 第一版的 bug：用「连续浊音段」作扫描单位，
+    但合成音频全程 voiced（2.40 秒），超过 max_sec=2.0 被整个跳过，
+    一条都出不来。
+
+    修法：改成**滑窗扫描**——从每个起点往后找，看后面
+    min_sec~max_sec 秒内是否单调移动 ≥ min_semitones。
+    不再依赖段落边界，也不要求整段都短。
+
+    和振荡是**两条独立轨道**，可以重叠（先滑下去再抖是常见现象）。
+
+    返回 [{start, end, semitones, seconds, direction, monotonicity, ratePerSec}]。
+    """
+    import numpy as _np
+    out = []
+    n = len(st)
+    if n < 5:
+        return out
+
+    valid = ~_np.isnan(st)
+    # 预计算有效帧的时间
+    vt = times
+    step = max(1, int(round(step_sec / max(1e-6, float(times[1] - times[0]) if n > 1 else 0.01))))
+
+    last_end = -1.0
+    i = 0
+    while i < n - 3:
+        if not valid[i]:
+            i += 1
+            continue
+        # 从 i 往后找最长的一段，长度不超过 max_sec
+        best = None
+        j = i + 2
+        while j < n and valid[j]:
+            dur = float(vt[j] - vt[i])
+            if dur > max_sec:
+                break
+            if dur >= min_sec:
+                seg = st[i:j + 1]
+                k = max(1, int(len(seg) * 0.15))
+                head = float(_np.median(seg[:k]))
+                tail = float(_np.median(seg[-k:]))
+                delta = tail - head
+                if abs(delta) >= min_semitones:
+                    # 单调性用「净位移 / 总路程」，不用「同向帧比例」。
+                    # 后者要求逐帧同向，而真实滑音总有微颤叠在上面
+                    # （实测 6_先滑后抖 的滑音段同向帧只有 40%，但净降 5.4 半音）。
+                    # 净位移比看的是累计效果：
+                    #   纯滑音 → ≈1    来回抖 → ≈0
+                    d = _np.diff(seg)
+                    total_path = float(_np.sum(_np.abs(d)))
+                    mono = (abs(delta) / total_path) if total_path > 1e-6 else 0.0
+                    if mono >= 0.55:
+                        # 记录更长的那个（滑得越远越可能是真滑音）
+                        if best is None or abs(delta) > abs(best[3]):
+                            best = (i, j, dur, delta, mono)
+            j += 1
+        if best is not None:
+            bi, bj, bdur, bdelta, bmono = best
+
+            # 抦掉两端平坦的部分。滑窗会一直延伸，
+            # 把「滑完之后保持不动」也算进区间（实测 0.25 秒滑音报成 1.48 秒）。
+            # 做法：从两端各剪掉「几乎不动」的帧（逐帧变化 < 0.05 半音）。
+            seg_b = st[bi:bj + 1]
+            d_b = _np.diff(seg_b)
+            moving = _np.abs(d_b) > 0.05
+
+            if moving.any():
+                first = int(_np.argmax(moving))
+                last = len(moving) - int(_np.argmax(moving[::-1])) - 1
+                # 转换成帧索引（d 比 seg 短 1）
+                nbi, nbj = bi + first, bi + last + 1
+                nbj = min(nbj, bj)
+                if nbj > nbi:
+                    new_dur = float(vt[nbj] - vt[nbi])
+                    if new_dur >= min_sec * 0.5:
+                        bi, bj, bdur = nbi, nbj, new_dur
+                        seg2 = st[bi:bj + 1]
+                        k2 = max(1, int(len(seg2) * 0.15))
+                        bdelta = float(_np.median(seg2[-k2:]) - _np.median(seg2[:k2]))
+                        dd = _np.diff(seg2)
+                        tp = float(_np.sum(_np.abs(dd)))
+                        bmono = (abs(bdelta) / tp) if tp > 1e-6 else 0.0
+            # 和上一段重叠就跳过（避免同一个滑音报很多次）。
+            # 第一版写成了 `vt[bi] >= last_end - 0.3*bdur`，
+            # 初始 last_end=-1.0 时任何起点都满足，结果第一个滑音就被跳过，
+            # 然后一路跳过去，一条都出不来。
+            overlaps = last_end > 0 and vt[bi] < last_end - 0.05
+            if overlaps:
+                i = bj + 1 if bj > bi else i + 1
+                continue
+            last_end = vt[bj]
+            out.append({
+                "start": round(float(vt[bi]), 2),
+                "end": round(float(vt[bj]), 2),
+                "semitones": round(float(abs(bdelta)), 2),
+                "seconds": round(float(bdur), 2),
+                "direction": "down" if bdelta < 0 else "up",
+                "monotonicity": round(float(bmono), 2),
+                "ratePerSec": round(float(abs(bdelta) / bdur), 1) if bdur > 0 else None,
+            })
+            i = bj + 1
+        else:
+            i += 1
+    return out
+
+
 def segment_summary(a, times, min_voiced=0.15):
     """把逐帧结果压成一句话能读的汇总。"""
     f0 = a["f0"]
     st = a["semitone"]
-    jt = a["jitter"]
+    jt = a["pitchOscillation"]
     db = a["db"]
     state = a["state"]
     voiced = ~np.isnan(f0)
@@ -2522,19 +2805,59 @@ def segment_summary(a, times, min_voiced=0.15):
         second = st[idx[idx > half]]
         if len(first) and len(second):
             out["trendSemitone"] = float(np.nanmedian(second) - np.nanmedian(first))
-    # 微颤统计只统计浊音帧（jitter 现在只在浊音帧有值，这里再明确一次）
+    # 音高振荡统计。2026-11-27 重做：
+    #   - 只有过了四层闸门的帧才有值（见 analyze 里的说明）
+    #   - jitterPeaks 已删除：它取 top-3 最大值，而最大值必然落在
+    #     「语调滑动最快」处，不可能是真正微颤处。用户实际被它误导过。
+    #     现在用 pitchOscillationSpans（连续时段）替代，更有用。
     valid_jt = np.where(~np.isnan(jt), jt, np.nan)
     if not np.isnan(valid_jt).all():
-        out["jitterMedian"] = float(np.nanmedian(valid_jt))
-        out["jitterP90"] = float(np.nanpercentile(valid_jt, 90))
-        out["jitterVoicedFrames"] = int(np.sum(~np.isnan(valid_jt)))
-        k = int(min(3, np.sum(~np.isnan(valid_jt))))
-        if k > 0:
-            order = np.argsort(np.nan_to_num(valid_jt, nan=-1))[::-1][:k]
-            out["jitterPeaks"] = [
-                {"at": round(float(times[i]), 2), "value": round(float(valid_jt[i]), 3)}
-                for i in order if not np.isnan(valid_jt[i])
-            ]
+        out["pitchOscillationMedian"] = float(np.nanmedian(valid_jt))
+        out["pitchOscillationP90"] = float(np.nanpercentile(valid_jt, 90))
+        out["pitchOscillationFrames"] = int(np.sum(~np.isnan(valid_jt)))
+        out["pitchOscillationCoverage"] = float(
+            np.sum(~np.isnan(valid_jt)) / max(1, np.sum(~np.isnan(f0))))
+
+    # 过零率（判据本身，字段保留——藏起来就成黑箱了）
+    zc = a.get("pitchOscillationRate")
+    if zc is not None:
+        vzc = zc[~np.isnan(zc)]
+        if len(vzc):
+            out["pitchOscillationRateMedian"] = float(np.median(vzc))
+
+    # 振荡时段：阈值以上的连续区间。
+    # 阈值用本段自己的 P75，不用跨库常数（换设备会整体偏移）。
+    out["pitchOscillationSpans"] = _osc_spans(jt, times, a.get("pitchOscillationRate"))
+
+    # 振荡不可用的原因（比给个 0 有用——0 会被读成「测了，是零」）
+    if "pitchOscillationMedian" not in out:
+        _rng = out.get("semitoneRange")
+        _f0m = out.get("f0Median")
+        try:
+            _fmin = cfg_num("XIYOUNG_AUDIO_F0_MIN", 75.0)
+        except Exception:
+            _fmin = 75.0
+        if (_rng is not None and _rng < 3.0
+                and _f0m is not None and _f0m <= _fmin * 1.15):
+            out["pitchOscillationNote"] = (
+                "整段音域只有 %.1f 半音且基频贴着搜索下限 %.0fHz，"
+                "属于机械声/纯音，基频的细微变化来自追踪抖动而非声带振动，"
+                "不给振荡值" % (_rng, _fmin))
+            # 关键：机械声时明确标「振荡可忽略」。
+            #
+            # 不编造一个 0 —— 那是假数值（这段根本没量到微颤）。
+            # 但也要让下游拿到「微颤极小」这个证据，
+            # 否则音乐判定会少一票（旧版靠 jitterMedian=0.000 判 car.wav 是合成音，
+            # 新版给 None 之后这条失效，car 从 nonSpeech 变成 nonverbal）。
+            out["pitchOscillationNegligible"] = True
+        else:
+            out["pitchOscillationNote"] = (
+                "没有帧通过闸门（非浊音/跨阶跃/断裂/滑音），"
+                "这不代表没有振荡，只代表这段不适合用这个方法量")
+
+    # 滑音：单调的大幅音高移动。和振荡是**两条独立轨道**，可以重叠——
+    # 一句话里完全可能先滑下去、滑到底再抖（人激动时就是这样）。
+    out["pitchGlides"] = _pitch_glides(st, times, f0)
     out["dbMedian"] = float(np.median(db)) if len(db) else 0.0
     out["dbMax"] = float(np.max(db)) if len(db) else 0.0
 
@@ -2712,7 +3035,9 @@ def to_jsonable(a):
         "times": arr(a["times"]),
         "f0": arr(a["f0"]),
         "semitone": arr(a["semitone"]),
-        "jitter": arr(a["jitter"]),
+        "pitchOscillation": arr(a["pitchOscillation"]),
+        # 过零率是判据本身，必须输出——藏起来就成黑箱了。
+        "pitchOscillationRate": arr(a.get("pitchOscillationRate")),
         "db": arr(a["db"]),
         "state": [str(s) for s in a["state"]],
         "localRef": arr(a.get("local_ref", [])),
@@ -2753,17 +3078,41 @@ def write_markdown(path, summary, curves, meta):
             L.append("- 走向：后半段比前半段低 %.1f 个半音（沉下去）" % abs(trend))
         else:
             L.append("- 走向：前后基本持平（%.1f 个半音）" % trend)
-    if "jitterMedian" in summary:
-        L.append("- 微颤：中位 %.2f 半音，P90 %.2f 半音" % (
-            summary["jitterMedian"], summary["jitterP90"]))
-        peaks = summary.get("jitterPeaks") or []
-        if peaks:
-            L.append("- 抖得最明显的位置：" + "、".join(
-                "%.2fs（%.2f）" % (p["at"], p["value"]) for p in peaks))
+    # 2026-11-27：jitterPeaks 已删除。它取 top-3 最大值，而最大值必然落在
+    # 「语调滑动最快」处，不可能是真正微颤处——用户实际被它误导过
+    # （看到 3.99 以为是「抖得最明显」，去看帧才发现是断口）。
+    # 现在改成时段 + 过零率：给现象，不给排名。
+    if summary.get("pitchOscillationMedian") is not None:
+        L.append("- 音高振荡（3-12 Hz 频段）：中位 %.3f 半音，P90 %.3f 半音" % (
+            summary["pitchOscillationMedian"], summary["pitchOscillationP90"]))
+        cov = summary.get("pitchOscillationCoverage")
+        if cov is not None:
+            L.append("  有效帧占浊音帧 %.0f%%（其余被闸门排除：非浊音/阶跃/断裂/滑音）"
+                     % (cov * 100))
+        spans = summary.get("pitchOscillationSpans") or []
+        if spans:
+            L.append("  振荡时段：")
+            for sp in spans[:6]:
+                rate = ("，来回 %.1f 次/秒" % sp["rate"]) if sp.get("rate") else ""
+                L.append("    %.2f–%.2fs（%.2fs）峰值 %.3f 半音%s" % (
+                    sp["start"], sp["end"], sp["seconds"], sp["peak"], rate))
+        else:
+            L.append("  没有连续 0.25 秒以上的振荡时段")
+
+    # 滑音：和振荡是两条独立轨道，可以重叠（先滑下去再抖是常见现象）
+    glides = summary.get("pitchGlides") or []
+    if glides:
+        L.append("- 音高滑移（单调移动 ≥3 半音）：")
+        for g in glides[:6]:
+            arrow = "↓" if g["direction"] == "down" else "↑"
+            L.append("    %.2f–%.2fs  %s%.1f 半音 / %.2f 秒（%.0f 半音/秒，单调性 %.0f%%）" % (
+                g["start"], g["end"], arrow, g["semitones"],
+                g["seconds"], g.get("ratePerSec") or 0, g["monotonicity"] * 100))
     L.append("- 响度：中位 %.1f dB，峰值 %.1f dB" % (
         summary.get("dbMedian", 0), summary.get("dbMax", 0)))
-    if summary.get("jitterVoicedFrames") is not None:
-        L.append("- 微颤只统计浊音帧（%d 帧）；清音/静音段不给抖动值" % summary["jitterVoicedFrames"])
+    if summary.get("pitchOscillationFrames") is not None:
+        L.append("- 音高振荡只统计过闸门的浊音帧（%d 帧）；"
+                 "清音/静音、跨阶跃、断裂、纯滑音段都不给值" % summary["pitchOscillationFrames"])
     L.append("")
 
     # 换腔警告
@@ -2816,7 +3165,7 @@ def write_markdown(path, summary, curves, meta):
                 s.get("start", 0), s.get("end", 0), txt,
                 ("%.1f Hz" % s["f0Median"]) if s.get("f0Median") else "—",
                 ("%+.2f" % s["semitoneMedian"]) if s.get("semitoneMedian") is not None else "—",
-                ("%.2f" % s["jitterMedian"]) if s.get("jitterMedian") is not None else "—"))
+                ("%.2f" % s["pitchOscillationMedian"]) if s.get("pitchOscillationMedian") is not None else "—"))
         L.append("")
     L.append("## 曲线")
     L.append("")
