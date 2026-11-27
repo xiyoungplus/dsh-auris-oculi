@@ -22,8 +22,14 @@ import urllib.error
 import urllib.request
 
 # 这个脚本在 scripts/ 下，但 index.js 和 prosody.py 都在上一级（插件根目录）。
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+# 目录结构：
+#   <插件根>/index.js  client.js  package.json
+#   <插件根>/lib/       运行时脚本（prosody.py 等）
+#   <插件根>/scripts/   这个文件（测试/辅助）
+HERE = os.path.dirname(os.path.abspath(__file__))       # scripts/
+ROOT = os.path.dirname(HERE)                            # 插件根
+LIB = os.path.join(ROOT, "lib")                         # 运行时脚本
+sys.path.insert(0, LIB)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 

@@ -133,24 +133,54 @@ python scripts/regression_content_class.py   # nonverbal 分类未退化
 
 ### 文件结构
 
-| 文件 | 行数 | 作用 |
-|---|---|---|
-| `index.js` | 6544 | **Host 半**：12 个工具 + 44 条路由 + 配置系统 + 任务调度 |
-| `client.js` | 2872 | **浏览器半**：手写，无构建步骤，无 JSX，用 `h()` |
-| `prosody.py` | 3082 | 韵律 + 频谱 + 包络 + 语速 + 转写 + 变化点 + 多后端嵌入 |
-| `video_watch.py` | 1280 | 视频抽帧 + 拼图 + 视觉模型 + 模型后端抽象 |
-| `speaker_diarize.py` | 429 | 单文件分离（含可信度判断） |
-| `batch_import.py` | 354 | 批量导入 + 标签推断 |
-| `benchmark.py` | 300 | 特征判别力评测 |
-| `speaker_compare.py` | 278 | 两条音频比对（同步工具） |
-| `speaker_cluster.py` | 191 | 批量聚类 |
-| `list_models.py` | 31 | 扫描模型后端 |
-| `cordis.patch.yml` | 5 | DSH 插件挂载声明 |
-| `scripts/test-host.mjs` | — | Host 半单测（64 条断言，隔离目录） |
-| `scripts/smoke.mjs` | — | client.js 真渲染冒烟 |
-| `scripts/audit-config.mjs` | — | 41 个配置项 × 工具参数 × 环境变量交叉检查 |
-| `scripts/regression_content_class.py` | — | nonverbal 分类回归（需 testdata/） |
-| `scripts/check_after_restart.py` | — | 重启后自检（编码修复是否生效） |
+| 位置 | 作用 |
+|---|---|
+| `index.js` | **Host 半**：12 个工具 + 44 条路由 + 配置系统 + 任务调度（6545 行） |
+| `client.js` | **浏览器半**：手写，无构建步骤，无 JSX，用 `h()`（2873 行） |
+| `lib/prosody.py` | 韵律 + 频谱 + 包络 + 语速 + 转写 + 变化点 + 多后端嵌入（3083 行） |
+| `lib/video_watch.py` | 视频抽帧 + 拼图 + 视觉模型 + 模型后端抽象（1281 行） |
+| `lib/speaker_diarize.py` | 单文件分离（含可信度判断） |
+| `lib/batch_import.py` | 批量导入 + 标签推断 |
+| `lib/benchmark.py` | 特征判别力评测 |
+| `lib/speaker_compare.py` | 两条音频比对（同步工具） |
+| `lib/speaker_cluster.py` | 批量聚类 |
+| `lib/list_models.py` | 扫描模型后端 |
+| `cordis.patch.yml` | DSH 插件挂载声明 |
+| `scripts/test-host.mjs` | Host 半单测（64 条断言，隔离目录） |
+| `scripts/smoke.mjs` | client.js 真渲染冒烟 |
+| `scripts/audit-config.mjs` | 41 个配置项 × 工具参数 × 环境变量交叉检查 |
+| `scripts/regression_content_class.py` | nonverbal 分类回归（需 testdata/） |
+| `scripts/check_after_restart.py` | 重启后自检（编码修复是否生效） |
+
+### 目录结构
+
+```text
+<插件根>/
+├── index.js  client.js        两个主文件，必须在根（DSH 按位置加载）
+├── package.json  cordis.patch.yml  icon.svg
+├── README.md  README.en.md  CHANGELOG.md  CONTRIBUTING.md  LICENSE
+├── lib/                       运行时 Python 脚本（被 index.js spawn）
+├── scripts/                   测试和辅助脚本
+├── docs/                      文档
+├── locale/                    界面文案
+├── models/                    说话人模型（.onnx 不入库）
+└── testdata/                  44 MB 测试音频（不入库）
+```
+
+**为什么 Python 脚本在 `lib/`**：`index.js` 用 `new URL('./lib/xxx.py', import.meta.url)`
+引用它们。移动时必须同步改这 8 处，否则运行时找不到脚本。
+
+**这些脚本的 `sys.path` 需要两行**：
+
+```python
+HERE = os.path.dirname(os.path.abspath(__file__))   # lib/
+ROOT = os.path.dirname(HERE)                        # 插件根
+sys.path.insert(0, ROOT)   # 读 testdata/、models/
+sys.path.insert(0, HERE)   # import prosody
+```
+
+漏了 `HERE` 就 import 不到 `prosody`，漏了 `ROOT` 就找不到 `models/`
+（**后者是静默失败**：模型找不到会退回 Resemblyzer，不报错）。
 
 **剩下的 8 个 `.py` 是核心脚本，被 `index.js` 的 spawn 调用，不能移。**
 测试和辅助脚本都在 `scripts/` 下——它们需要 `ROOT` 在 `sys.path` 里才能 import `prosody`。

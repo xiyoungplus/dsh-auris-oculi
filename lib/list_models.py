@@ -9,6 +9,8 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)  # lib/ 的上一级 = 插件根目录
+sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 try:

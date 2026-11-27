@@ -5,6 +5,53 @@
 
 ---
 
+## 0.20.5
+
+**Python 脚本移进 lib/，根目录从 18 个文件收到 12 个。**
+
+`	ext
+<插件根>/
+├── index.js  client.js        两个主文件
+├── package.json  cordis.patch.yml  icon.svg
+├── README.md  README.en.md  CHANGELOG.md  CONTRIBUTING.md  LICENSE
+├── lib/       8 个运行时 Python 脚本
+├── scripts/   测试和辅助脚本
+├── docs/      9 份文档
+├── locale/  models/  testdata/
+`
+
+**改了两处引用**：
+
+1. index.js 的 8 处 
+ew URL('./xxx.py') → 
+ew URL('./lib/xxx.py')
+2. 6 个脚本的 sys.path 各加一行 ROOT
+
+**移动时踩到的两个坑**：
+
+**坑 1：prosody.py 的模型查找静默失效**
+
+它原来用 here = dirname(__file__) 找 here/models/。
+移到 lib/ 后变成找 lib/models/（不存在），于是 **CAM++ 模型找不到、
+静默退回 Resemblyzer，不报任何错**。
+
+修法：显式算出 
+oot = dirname(here)，用 
+oot/models/。
+
+这个坑很难发现——功能还是能用，只是精度悄悄降了。
+
+**坑 2：scripts/ 里的脚本 import 不到已迁移的模块**
+
+它们把 ROOT 加进了 sys.path，但 prosody.py 现在在 lib/。
+修法：LIB = join(ROOT, lib) 也加进去。
+
+**验证**：端到端检查 8/8 路径正确、8 个脚本能独立启动、
+7 个脚本能 import prosody、CAM++ 模型能找到，并真跑了一次分析
+（33 个特征、转写中文完好）。
+
+---
+
 ## 0.20.4
 
 **文档拆分与目录整理。功能无变化。**

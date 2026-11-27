@@ -1144,13 +1144,20 @@ def _campplus_model_path():
     explicit = cfg_str("XIYOUNG_SPEAKER_MODEL", "") or ""
     if explicit and os.path.exists(explicit):
         return explicit
+    # 这个文件在 lib/ 下，所以插件根目录是它的上一级。
+    # 之前这里是 here = dirname(__file__) 然后找 here/models——
+    # 脚本移到 lib/ 后，那样会指向 lib/models/（不存在的目录），
+    # 导致 CAM++ 模型静默找不到、退回 Resemblyzer。
     here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)
     candidates = [
         # 插件自己的 models/ 目录（推荐：模型跟着插件走）
+        os.path.join(root, "models"),
+        # 也兼容脚本还在根目录的情况（比如直接从源码跑）
         os.path.join(here, "models"),
         # 开发时常见的位置：工作区上一级或上两级下的 datasets/speaker-models
-        os.path.join(here, "..", "datasets", "speaker-models"),
-        os.path.join(here, "..", "..", "datasets", "speaker-models"),
+        os.path.join(root, "..", "datasets", "speaker-models"),
+        os.path.join(root, "..", "..", "datasets", "speaker-models"),
         # 用户数据目录
         os.path.join(os.path.expanduser("~"), ".dsh", "xiyoungtools", "speaker-models"),
     ]

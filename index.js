@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 export const name = 'xiyoungtools'
 export const inject = ['webServer', 'tools']
 
-const SCRIPT = fileURLToPath(new URL('./video_watch.py', import.meta.url))
+const SCRIPT = fileURLToPath(new URL('./lib/video_watch.py', import.meta.url))
 // 模型名一律在运行时用 resolveModel() 解析：工具参数 > config.json model.name > 内置默认。
 // 这里只保留一个兜底常量，绝不参与判断——之前的 `=== DEFAULT_MODEL` 守卫就是因为
 // 它是 null、而模型名是 'qwen3.5:4b'，永远不相等，把 video_summary 整个拦死了。
@@ -2691,7 +2691,7 @@ function prepareClipRequest(body) {
 // ---------------------------------------------------------------------------
 
 const PROSODY_ROOT = process.env.XIYOUNG_PROSODY_ROOT || path.join(TOOLBOX_HOME, 'prosody')
-const PROSODY_SCRIPT = fileURLToPath(new URL('./prosody.py', import.meta.url))
+const PROSODY_SCRIPT = fileURLToPath(new URL('./lib/prosody.py', import.meta.url))
 
 /** @type {Map<string, any>} */
 const prosodies = new Map()
@@ -3900,7 +3900,7 @@ function safeCount(dir) {
 // 批量导入：一个文件夹的音频 → 逐条韵律分析 → 特征和标签攒成对照表
 // ---------------------------------------------------------------------------
 
-const BATCH_SCRIPT = fileURLToPath(new URL('./batch_import.py', import.meta.url))
+const BATCH_SCRIPT = fileURLToPath(new URL('./lib/batch_import.py', import.meta.url))
 const BATCH_ROOT = process.env.XIYOUNG_BATCH_ROOT || path.join(TOOLBOX_HOME, 'batches')
 
 /** @type {Map<string, any>} */
@@ -4270,7 +4270,7 @@ const prosodyBatchTool = {
 // 说话人聚类：一批音频 → 嵌入 → 聚类 → "大致有几个人"
 // ---------------------------------------------------------------------------
 
-const CLUSTER_SCRIPT = fileURLToPath(new URL('./speaker_cluster.py', import.meta.url))
+const CLUSTER_SCRIPT = fileURLToPath(new URL('./lib/speaker_cluster.py', import.meta.url))
 const CLUSTER_ROOT = process.env.XIYOUNG_CLUSTER_ROOT || path.join(TOOLBOX_HOME, 'clusters')
 
 /** @type {Map<string, any>} */
@@ -4475,7 +4475,7 @@ function clusterToolResult(job) {
   }
 }
 
-const COMPARE_SCRIPT = fileURLToPath(new URL('./speaker_compare.py', import.meta.url))
+const COMPARE_SCRIPT = fileURLToPath(new URL('./lib/speaker_compare.py', import.meta.url))
 
 /**
  * 两段音频的声纹比对。
@@ -4694,7 +4694,7 @@ const speakerClusterTool = {
 // 单条音频的说话人分离
 // ---------------------------------------------------------------------------
 
-const DIARIZE_SCRIPT = fileURLToPath(new URL('./speaker_diarize.py', import.meta.url))
+const DIARIZE_SCRIPT = fileURLToPath(new URL('./lib/speaker_diarize.py', import.meta.url))
 const DIARIZE_ROOT = process.env.XIYOUNG_DIARIZE_ROOT || path.join(TOOLBOX_HOME, 'diarize')
 
 /** @type {Map<string, any>} */
@@ -4944,7 +4944,7 @@ const speakerDiarizeTool = {
 // 特征判别力评测：这批数字到底能不能分开人/情绪
 // ---------------------------------------------------------------------------
 
-const BENCH_SCRIPT = fileURLToPath(new URL('./benchmark.py', import.meta.url))
+const BENCH_SCRIPT = fileURLToPath(new URL('./lib/benchmark.py', import.meta.url))
 const BENCH_ROOT = process.env.XIYOUNG_BENCH_ROOT || path.join(TOOLBOX_HOME, 'bench')
 
 /** @type {Map<string, any>} */
@@ -5347,7 +5347,7 @@ export function apply(ctx) {
   register('/xiyoungtools/models', async (req, res) => {
     if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' })
     try {
-      const script = fileURLToPath(new URL('./list_models.py', import.meta.url))
+      const script = fileURLToPath(new URL('./lib/list_models.py', import.meta.url))
       if (!existsSync(script)) {
         return sendJson(res, 500, { error: 'list_models.py 不存在' })
       }
