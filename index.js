@@ -408,7 +408,7 @@ function fixLegacyPathsInRecords() {
       }
     }
   }
-  for (const kind of ['clips', 'prosody', 'runs', 'batches']) {
+  for (const kind of ['clips', 'prosody', 'runs', 'batches', 'analyze', 'clusters', 'diarize', 'bench']) {
     const dir = path.join(TOOLBOX_HOME, kind)
     if (existsSync(dir)) visit(dir)
   }
@@ -1059,6 +1059,10 @@ function startJob(input, options) {
     start: options.start !== undefined ? String(options.start) : null,
     end: options.end !== undefined ? String(options.end) : null,
     duration: options.duration !== undefined ? String(options.duration) : null,
+    // maxSheets 被 maxSheetsHardCap 夹住时记下来，回执里说明（之前是静默的）
+    maxSheetsCapped: options.maxSheetsCapped === true,
+    wantSheets: Number(options.wantSheets) || null,
+    effectiveMaxSheets: Number(options.effectiveMaxSheets) || null,
     outDir,
     status: 'queued',
     stage: '准备中',
@@ -1199,6 +1203,12 @@ function finishedToolResult(job, includeReport) {
   // 本次请求的时间段（从请求参数或报告横幅里取）
   const rangeBanner = report.report.match(/^> ⚠ \*\*只看了 (.+?) 这一段\*\*/m)
 
+  // 被 maxSheetsHardCap 夹住时要说清楚，否则用户会以为设的 300 生效了
+  const capNote = (job.maxSheetsCapped && job.wantSheets && job.effectiveMaxSheets)
+    ? ('maxSheets 给了 ' + job.wantSheets + '，但被 video.maxSheetsHardCap 限制为 '
+       + job.effectiveMaxSheets + '。想要更多拼图，调高那个配置项。')
+    : null
+
   return {
     ok: job.status === 'done',
     jobId: job.id,
@@ -1211,6 +1221,7 @@ function finishedToolResult(job, includeReport) {
     videoDescription: descMatch ? descMatch[1].trim().slice(0, 500) : null,
     // 摘要由模型生成，人名/书名来自 OCR，不可靠
     summaryIsModelGenerated: Boolean(summary),
+    maxSheetsNote: capNote,
     summaryCaveat: summary
       ? '摘要是本地视觉模型根据逐帧画面写的，不是事实核对。画面里的人名、书名、术语来自 OCR，可能读错。'
       : null,
@@ -1218,6 +1229,11 @@ function finishedToolResult(job, includeReport) {
     sheets: report.sheets,
     analyzed: report.analyzed,
     total: report.total,
+    // maxSheets 的实际生效值。schema 允许到 500，但被 maxSheetsHardCap 夹住，
+    // 之前用户传 300 变成 200 是完全静默的。
+    maxSheetsCapped: job.maxSheetsCapped === true,
+    effectiveMaxSheets: job.effectiveMaxSheets,
+    wantedMaxSheets: job.wantSheets,
     // 2026-11-27 补丁（社区贡献）：逐格结构化结果（按时间排序），
     // agent 不必再读 report.md 找时间点。只回前 80 条，剩下的给路径。
     entries: Array.isArray(job.result && job.result.entries)
@@ -1862,6 +1878,203 @@ const toolboxJobTool = {
   },
 }
 
+/**
+ * 环境体检（2026-11-27）。
+ *
+ * 和 health 端点的区别：health 是给页面渲染用的（列原始事实），
+ * doctor 是给 agent 用的（说清缺什么会导致什么不可用，以及磁盘占多少）。
+ */
+const toolboxDoctorTool = {
+  name: 'toolbox_doctor',
+  description:
+    '体检这个插件的运行环境：依赖是否齐全、哪些功能因此不可用、各部分占多少磁盘。'
+    + '遇到「找不到 ffmpeg」「模型不可用」「磁盘满了」这类问题，先调它，不用让用户去翻页面底部。'
+    + '返回 dependencies（每项是否可用 + 缺了影响什么）、features（每个功能能不能用）、'
+    + 'disk（各目录占用）、suggestion（一句话建议，没有问题时为 null）。',
+  parameters: { type: 'object', properties: {} },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        ok: { type: 'boolean' },
+        dependencies: { type: 'object' },
+        features: { type: 'object' },
+        disk: { type: 'object' },
+        diskTotalMB: { type: 'number' },
+        suggestion: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+        paths: { type: 'object' }
+      }
+    },
+    render: (_args, v) => {
+      if (!v || !v.ok) return [{ type: 'text', text: '体检失败：' + String((v && v.error) || '') }]
+      const lines = []
+      const deps = v.dependencies || {}
+      const missing = Object.keys(deps).filter((k) => !deps[k].ok)
+      if (missing.length === 0) {
+        lines.push('依赖齐全')
+      } else {
+        lines.push('缺 ' + missing.length + ' 项依赖：')
+        for (const k of missing) {
+          lines.push('  · ' + deps[k].label + ' — ' + (deps[k].blocks || []).join('、') + ' 不可用')
+          if (deps[k].fix) lines.push('    装法：' + deps[k].fix)
+        }
+      }
+      const feats = v.features || {}
+      const off = Object.keys(feats).filter((k) => !feats[k])
+      if (off.length) {
+        lines.push('')
+        lines.push('不可用的功能：' + off.join('、'))
+      }
+      if (v.disk && Object.keys(v.disk).length) {
+        lines.push('')
+        lines.push('磁盘占用（合计 ' + Math.round(v.diskTotalMB || 0) + ' MB）：')
+        for (const k of Object.keys(v.disk)) {
+          const mb = v.disk[k]
+          if (mb >= 1) lines.push('  ' + k + ': ' + Math.round(mb) + ' MB')
+        }
+      }
+      if (v.suggestion) {
+        lines.push('')
+        lines.push('建议：' + v.suggestion)
+      }
+      return [{ type: 'text', text: lines.join('\n') }]
+    }
+  },
+  async execute() {
+    const h = await collectHealth()
+
+    // ---------------------------------------------------------------- 依赖
+    const dependencies = {
+      ffmpeg: {
+        ok: Boolean(h.ffmpegExists),
+        label: 'ffmpeg',
+        value: h.ffmpeg,
+        blocks: ['视频逐帧观看', '片段截取', '韵律分析', '一站式分析'],
+        fix: 'choco install ffmpeg  或  winget install Gyan.FFmpeg'
+      },
+      python: {
+        ok: Boolean(h.pythonExists),
+        label: 'Python 运行时',
+        value: h.python,
+        blocks: ['韵律分析', '批量导入', '声纹比对', '说话人聚类/分离', '特征评测'],
+        fix: '通常随 DSH 自带；确认 DSH 安装完整'
+      },
+      librosa: (() => {
+        const p = probePythonDeps()
+        const lib = p.librosa || { ok: false, err: '未探测' }
+        return {
+          ok: Boolean(lib.ok),
+          label: 'librosa',
+          value: lib.ok ? '可 import' : (lib.err || null),
+          blocks: ['韵律分析', '批量导入'],
+          fix: 'pip install librosa soundfile scipy numpy'
+        }
+      })(),
+      ytdlp: {
+        ok: Boolean(h.ytdlpExists),
+        label: 'yt-dlp',
+        value: h.ytdlp,
+        blocks: ['B 站链接下载'],
+        fix: 'pip install -U yt-dlp'
+      },
+      ollama: {
+        ok: Boolean(h.ollamaOK),
+        label: 'Ollama',
+        value: h.ollama,
+        blocks: ['视频逐帧观看'],
+        fix: 'winget install Ollama.Ollama'
+      },
+      visionModel: {
+        ok: Array.isArray(h.models) && h.models.length > 0,
+        label: '视觉模型',
+        value: (h.models || []).slice(0, 3).join(', ') || null,
+        blocks: ['视频逐帧观看'],
+        fix: 'ollama pull qwen3.5:4b'
+      },
+      resemblyzer: {
+        ok: Boolean(h.speakerModelAvailable),
+        label: '声纹模型',
+        value: h.speakerModelAvailable ? '可用' : null,
+        blocks: ['声纹比对', '说话人聚类/分离'],
+        fix: 'pip install resemblyzer webrtcvad-wheels'
+      }
+    }
+
+    // ---------------------------------------------------------------- 功能
+    const features = {
+      '视频逐帧观看': Boolean(h.ffmpegExists) && Boolean(h.ytdlpExists) && Boolean(h.ollamaOK),
+      '片段截取': Boolean(h.ffmpegExists),
+      '韵律分析': Boolean(h.ffmpegExists) && Boolean(h.pythonExists),
+      '批量导入': Boolean(h.ffmpegExists) && Boolean(h.pythonExists),
+      '声纹比对': Boolean(h.pythonExists) && Boolean(h.speakerModelAvailable),
+      '说话人聚类/分离': Boolean(h.pythonExists) && Boolean(h.speakerModelAvailable),
+      '特征评测': Boolean(h.pythonExists)
+    }
+
+    // ---------------------------------------------------------------- 磁盘
+    const roots = {
+      runs: h.workRoot,
+      clips: h.clipRoot,
+      prosody: h.prosodyRoot,
+      batches: h.batchRoot,
+      clusters: h.clusterRoot,
+      diarize: h.diarizeRoot,
+      bench: h.benchRoot,
+      cache: VIDEO_CACHE_ROOT
+    }
+    const disk = {}
+    let diskTotalMB = 0
+    for (const [k, p] of Object.entries(roots)) {
+      if (!p) continue
+      try {
+        if (!existsSync(p)) continue
+        const mb = dirSize(p) / (1024 * 1024)
+        disk[k] = Math.round(mb * 10) / 10
+        diskTotalMB += mb
+      } catch {
+        /* 目录不存在或没权限 */
+      }
+    }
+    diskTotalMB = Math.round(diskTotalMB)
+
+    // ---------------------------------------------------------------- 建议
+    let suggestion = null
+    const missingDeps = Object.keys(dependencies).filter((k) => !dependencies[k].ok)
+    if (missingDeps.includes('ffmpeg')) {
+      suggestion = '先装 ffmpeg——没有它所有音视频功能都用不了。'
+    } else if (missingDeps.includes('python')) {
+      suggestion = 'Python 运行时不可用，DSH 安装可能不完整。'
+    } else if (missingDeps.includes('ollama') || missingDeps.includes('visionModel')) {
+      suggestion = '视频逐帧观看需要 Ollama + 视觉模型；其他功能不受影响。'
+    } else if (missingDeps.includes('ytdlp')) {
+      suggestion = '没有 yt-dlp，只能处理本地文件，B 站链接不可用。'
+    } else if (missingDeps.includes('resemblyzer')) {
+      suggestion = '声纹相关功能需要 resemblyzer；韵律和截取不受影响。'
+    } else if (disk.cache && disk.cache > 2048) {
+      suggestion = '下载缓存已占 ' + Math.round(disk.cache) + ' MB，'
+        + '可以用 toolbox_cache_clean({ kind: "cache" }) 清理。'
+    } else if (diskTotalMB > 10240) {
+      suggestion = '中间产物累计超过 10 GB，'
+        + '可以用 toolbox_cache_clean({ kind: "all", maxAgeDays: 7 }) 清掉 7 天前的。'
+    }
+
+    return {
+      ok: true,
+      dependencies,
+      features,
+      disk,
+      diskTotalMB,
+      suggestion,
+      paths: {
+        toolboxHome: h.toolboxHome,
+        labelFile: h.labelFile,
+        cache: VIDEO_CACHE_ROOT
+      }
+    }
+  }
+}
+
 const cacheCleanTool = {
   name: 'toolbox_cache_clean',
   description:
@@ -1874,7 +2087,7 @@ const cacheCleanTool = {
     properties: {
       kind: {
         type: 'string',
-        enum: ['all', 'runs', 'clips', 'prosody'],
+        enum: ['all', 'runs', 'clips', 'prosody', 'analyze', 'batches', 'clusters', 'diarize', 'bench', 'cache'],
         description: '清哪一类，默认 all。'
       },
       all: { type: 'boolean', description: '连任务目录一起删，默认只清中间产物。' },
@@ -2119,7 +2332,11 @@ const videoSummaryTool = {
         + '（或在配置里把 model.name 改回去）')
     }
     const sheetCap = Number(cfg('video', 'maxSheetsHardCap', 200)) || 200
-    const maxSheets = Math.max(1, Math.min(sheetCap, Number(args && args.maxSheets) || 12))
+    const wantSheets = Math.max(1, Number(args && args.maxSheets) || 12)
+    const maxSheets = Math.max(1, Math.min(sheetCap, wantSheets))
+    // schema 允许到 500，但实际被 maxSheetsHardCap 夹住。用户传 300 会变 200，
+    // 之前完全静默——现在记下来，回执里说明。
+    const maxSheetsCapped = wantSheets > sheetCap
     const interval = Number(args && args.interval)
     const waitSeconds = Math.max(30, Math.min(14400, Number(args && args.waitSeconds) || 900))
     const includeReport = !(args && args.includeReport === false)
@@ -2133,6 +2350,9 @@ const videoSummaryTool = {
       throw new Error('video_summary: end 和 duration 只能给一个')
     }
     const job = startJob(input, {
+      maxSheetsCapped,
+      wantSheets,
+      effectiveMaxSheets: maxSheets,
       model,
       summary: !(args && args.summary === false),
       maxSheets,
@@ -3827,6 +4047,13 @@ const CLEAN_KEEP = {
 }
 
 /** kind → 根目录。labels 故意不在这里：标注是唯一不可再生数据，任何清理都不碰它。 */
+// 下载缓存（0.21.0 新增）。结构和其他任务目录不同：
+// 别的 root/ 下每个子目录是一次任务，这里 root/ 下直接是平铺的 mp4。
+// 所以用单独的清理函数，不塞进 cleanKind。
+const VIDEO_CACHE_ROOT = process.env.XIYOUNG_VIDEO_CACHE_DIR
+  ? path.resolve(String(process.env.XIYOUNG_VIDEO_CACHE_DIR))
+  : path.join(TOOLBOX_HOME, 'cache', 'video')
+
 const CLEAN_ROOTS = {
   runs: () => WORK_ROOT,
   clips: () => CLIP_ROOT,
@@ -3838,7 +4065,66 @@ const CLEAN_ROOTS = {
   bench: () => BENCH_ROOT
 }
 
+/**
+ * 清下载缓存。和 cleanKind 的区别：这里是平铺文件，不是任务目录。
+ *
+ * 安全设计：
+ *   - 不给 all 也不给 maxAgeDays 时，什么都不删（只报告大小）
+ *   - maxAgeDays 按文件 mtime 判断，只删够老的
+ *   - 只删 .mp4/.part/.ytdl，不碰其他东西
+ */
+function cleanCache(options = {}) {
+  const maxAgeMs = Number(options.maxAgeDays) > 0
+    ? Number(options.maxAgeDays) * 86400000
+    : null
+  const all = options.all === true
+  const now = Date.now()
+  let freed = 0
+  let removed = 0
+  let kept = 0
+
+  let files = []
+  try {
+    files = readdirSync(VIDEO_CACHE_ROOT, { withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => e.name)
+  } catch {
+    return { ok: true, kind: 'cache', freedBytes: 0, removed: 0, kept: 0 }
+  }
+
+  for (const name of files) {
+    if (!/\.(mp4|part|ytdl)$/i.test(name)) continue
+    const full = path.join(VIDEO_CACHE_ROOT, name)
+    let mtime = 0
+    let size = 0
+    try {
+      const st = statSync(full)
+      mtime = st.mtimeMs
+      size = st.size
+    } catch {
+      continue
+    }
+    const old = maxAgeMs !== null && (now - mtime) > maxAgeMs
+    // 没给 all 也没给 maxAgeDays → 只统计不删
+    if (!all && !old) {
+      kept += 1
+      continue
+    }
+    try {
+      rmSync(full, { force: true })
+      freed += size
+      removed += 1
+    } catch {
+      /* locked */
+    }
+  }
+
+  return { ok: true, kind: 'cache', freedBytes: freed, removed, kept }
+}
+
 function cleanKind(kind, options = {}) {
+  // cache 的结构和任务目录不同，走自己的清理逻辑
+  if (kind === 'cache') return cleanCache(options)
   const rootOf = CLEAN_ROOTS[kind]
   if (!rootOf) return { ok: false, error: '未知类型：' + kind }
   const root = rootOf()
@@ -5364,6 +5650,129 @@ function loadHistory() {
   }
 }
 
+/**
+ * 探测 python 侧的关键依赖能不能 import。
+ *
+ * 为什么必须真探测：PATH 里可能有多个 python，系统那个往往没装 librosa。
+ * 光看"python 不存在"不够，光看"python 存在"也不够——得实际 import 一次。
+ *
+ * 结果缓存 60 秒：doctor 可能被连续调用，每次起 python 要 1-2 秒。
+ */
+let _pyDepsCache = { at: 0, value: null }
+
+function probePythonDeps() {
+  const now = Date.now()
+  if (_pyDepsCache.value && now - _pyDepsCache.at < 60000) {
+    return _pyDepsCache.value
+  }
+  const value = {}
+  for (const mod of ['numpy', 'librosa', 'soundfile', 'scipy']) {
+    try {
+      const r = spawnSync(PYTHON, ['-c', 'import ' + mod], {
+        timeout: 20000,
+        windowsHide: true,
+        encoding: 'utf8',
+      })
+      value[mod] = { ok: r.status === 0, err: r.status === 0 ? null : String(r.stderr || '').slice(0, 120) }
+    } catch (e) {
+      value[mod] = { ok: false, err: String(e && e.message ? e.message : e).slice(0, 120) }
+    }
+  }
+  _pyDepsCache = { at: now, value }
+  return value
+}
+
+/**
+ * 探测环境：依赖在不在、模型可不可用、各部分占多少磁盘。
+ *
+ * health 端点和 toolbox_doctor 共用这一份，避免两套逻辑漂移。
+ * （之前页面底部显示的和工具能查到的如果不一样，排查会互相矛盾。）
+ */
+async function collectHealth() {
+  let models = []
+  let slowModels = []
+  let ollamaOK = false
+  // 并发建议：靠"模型有多少进了显存"判断。
+  // 全进显存 → 并发有意义；GPU/CPU 混合 → 并发会互相争抢。
+  let gpuFit = null
+  const currentModel = String(resolveModel())
+  try {
+    const psRes = await fetch(OLLAMA() + '/api/ps', { signal: AbortSignal.timeout(2500) })
+    const psData = await psRes.json()
+    const loaded = (psData.models || []).find((m) => m.name === currentModel)
+    if (loaded && loaded.size > 0) {
+      const ratio = (loaded.size_vram || 0) / loaded.size
+      gpuFit = {
+        model: loaded.name,
+        sizeGB: Math.round((loaded.size / 1e9) * 100) / 100,
+        vramGB: Math.round(((loaded.size_vram || 0) / 1e9) * 100) / 100,
+        vramRatio: Math.round(ratio * 100),
+        suggestedConcurrency: ratio >= 0.9 ? 3 : 1,
+        note: ratio >= 0.9
+          ? '模型基本全在显存里，可以试 2-3 并发'
+          : '模型只有部分进显存（GPU/CPU 混合），并发可能反而变慢，建议保持 1',
+      }
+    }
+  } catch {
+    gpuFit = null
+  }
+  try {
+    const response = await fetch(OLLAMA() + '/api/tags', { signal: AbortSignal.timeout(2500) })
+    const data = await response.json()
+    const visionModels = (data.models || [])
+      .filter((model) => Array.isArray(model.capabilities) && model.capabilities.includes('vision'))
+      .map((model) => model.name)
+    slowModels = visionModels.filter((name) => SLOW_MODELS().has(name))
+    models = visionModels
+      .filter((name) => !SLOW_MODELS().has(name))
+      .sort((a, b) => (b === 'qwen3.5:4b') - (a === 'qwen3.5:4b'))
+    ollamaOK = true
+  } catch {
+    ollamaOK = false
+  }
+  return {
+    ok: true,
+    python: PYTHON,
+    pythonExists: PYTHON.includes('/') || PYTHON.includes('\\') ? existsSync(PYTHON) : true,
+    script: SCRIPT,
+    scriptExists: existsSync(SCRIPT),
+    ffmpeg: FFMPEG,
+    ffmpegExists: Boolean(FFMPEG),
+    ytdlp: YTDLP,
+    ytdlpExists: Boolean(YTDLP),
+    dshHome: DSH_HOME,
+    toolboxHome: TOOLBOX_HOME,
+    workRoot: WORK_ROOT,
+    clipRoot: CLIP_ROOT,
+    ffprobe: FFPROBE,
+    ffprobeExists: Boolean(FFPROBE),
+    clipFormats: ['mp4', 'mp3'],
+    prosodyRoot: PROSODY_ROOT,
+    prosodyScript: PROSODY_SCRIPT,
+    prosodyScriptExists: existsSync(PROSODY_SCRIPT),
+    labelFile: LABELS_FILE,
+    batchRoot: BATCH_ROOT,
+    batchScript: BATCH_SCRIPT,
+    batchScriptExists: existsSync(BATCH_SCRIPT),
+    clusterRoot: CLUSTER_ROOT,
+    clusterScript: CLUSTER_SCRIPT,
+    clusterScriptExists: existsSync(CLUSTER_SCRIPT),
+    diarizeRoot: DIARIZE_ROOT,
+    diarizeScript: DIARIZE_SCRIPT,
+    diarizeScriptExists: existsSync(DIARIZE_SCRIPT),
+    benchRoot: BENCH_ROOT,
+    benchScript: BENCH_SCRIPT,
+    benchScriptExists: existsSync(BENCH_SCRIPT),
+    speakerModelAvailable: probeResemblyzer(),
+    model: currentModel,
+    ollama: OLLAMA(),
+    ollamaOK,
+    gpuFit,
+    models,
+    slowModels
+  }
+}
+
 export function apply(ctx) {
   const webServer = ctx.webServer || (typeof ctx.get === 'function' ? ctx.get('webServer') : undefined)
   if (!webServer || typeof webServer.register !== 'function') {
@@ -5528,91 +5937,7 @@ export function apply(ctx) {
 
   register('/xiyoungtools/health', async (req, res) => {
     if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' })
-    let models = []
-    let slowModels = []
-    let ollamaOK = false
-    // 并发建议：靠"模型有多少进了显存"判断。
-    // 全进显存 → 并发有意义；GPU/CPU 混合 → 并发会互相争抢。
-    let gpuFit = null
-    // health 是页面启动时拉一次的端点，必须快：resemblyzer 探测要用 spawnSync 起 python，
-    // 每次都跑会让这个端点稳定花掉 3 秒以上。结果只跟解释器有关，缓存整个进程生命周期。
-    const currentModel = String(resolveModel())
-    try {
-      const psRes = await fetch(OLLAMA() + '/api/ps', { signal: AbortSignal.timeout(2500) })
-      const psData = await psRes.json()
-      const loaded = (psData.models || []).find((m) => m.name === currentModel)
-      if (loaded && loaded.size > 0) {
-        const ratio = (loaded.size_vram || 0) / loaded.size
-        gpuFit = {
-          model: loaded.name,
-          sizeGB: Math.round((loaded.size / 1e9) * 100) / 100,
-          vramGB: Math.round(((loaded.size_vram || 0) / 1e9) * 100) / 100,
-          vramRatio: Math.round(ratio * 100),
-          // 全进显存（>=90%）才建议并发
-          suggestedConcurrency: ratio >= 0.9 ? 3 : 1,
-          note: ratio >= 0.9
-            ? '模型基本全在显存里，可以试 2-3 并发'
-            : '模型只有部分进显存（GPU/CPU 混合），并发可能反而变慢，建议保持 1',
-        }
-      }
-    } catch {
-      gpuFit = null
-    }
-    try {
-      const response = await fetch(OLLAMA() + '/api/tags', { signal: AbortSignal.timeout(2500) })
-      const data = await response.json()
-      const visionModels = (data.models || [])
-        .filter((model) => Array.isArray(model.capabilities) && model.capabilities.includes('vision'))
-        .map((model) => model.name)
-      slowModels = visionModels.filter((name) => SLOW_MODELS().has(name))
-      models = visionModels
-        .filter((name) => !SLOW_MODELS().has(name))
-        .sort((a, b) => (b === 'qwen3.5:4b') - (a === 'qwen3.5:4b'))
-      ollamaOK = true
-    } catch {
-      ollamaOK = false
-    }
-    sendJson(res, 200, {
-      ok: true,
-      python: PYTHON,
-      pythonExists: PYTHON.includes('/') || PYTHON.includes('\\') ? existsSync(PYTHON) : true,
-      script: SCRIPT,
-      scriptExists: existsSync(SCRIPT),
-      ffmpeg: FFMPEG,
-      ffmpegExists: Boolean(FFMPEG),
-      ytdlp: YTDLP,
-      ytdlpExists: Boolean(YTDLP),
-      dshHome: DSH_HOME,
-      toolboxHome: TOOLBOX_HOME,
-      workRoot: WORK_ROOT,
-      clipRoot: CLIP_ROOT,
-      ffprobe: FFPROBE,
-      ffprobeExists: Boolean(FFPROBE),
-      clipFormats: ['mp4', 'mp3'],
-      prosodyRoot: PROSODY_ROOT,
-      prosodyScript: PROSODY_SCRIPT,
-      prosodyScriptExists: existsSync(PROSODY_SCRIPT),
-      labelFile: LABELS_FILE,
-      batchRoot: BATCH_ROOT,
-      batchScript: BATCH_SCRIPT,
-      batchScriptExists: existsSync(BATCH_SCRIPT),
-      clusterRoot: CLUSTER_ROOT,
-      clusterScript: CLUSTER_SCRIPT,
-      clusterScriptExists: existsSync(CLUSTER_SCRIPT),
-      diarizeRoot: DIARIZE_ROOT,
-      diarizeScript: DIARIZE_SCRIPT,
-      diarizeScriptExists: existsSync(DIARIZE_SCRIPT),
-      benchRoot: BENCH_ROOT,
-      benchScript: BENCH_SCRIPT,
-      benchScriptExists: existsSync(BENCH_SCRIPT),
-      speakerModelAvailable: probeResemblyzer(),
-      model: currentModel,
-      ollama: OLLAMA(),
-      ollamaOK,
-      gpuFit,
-      models,
-      slowModels
-    })
+    sendJson(res, 200, await collectHealth())
   })
 
   register('/xiyoungtools/video-watch', async (req, res) => {
@@ -6539,7 +6864,8 @@ export function apply(ctx) {
       speakerDiarizeTool,
       benchTool,
       analyzeTool, toolboxJobTool,
-      cacheCleanTool
+      cacheCleanTool,
+      toolboxDoctorTool
     ]) {
       try {
         const dispose = toolRegistry.register(definition)

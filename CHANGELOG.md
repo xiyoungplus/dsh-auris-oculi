@@ -5,6 +5,73 @@
 
 ---
 
+## 0.21.1
+
+**把 0.21.0 留下的三项后续做完。工具从 12 个增到 13 个。**
+
+### 一、下载缓存纳入清理（重要）
+
+0.21.0 加了 `cache/video` 下载缓存，但 `CLEAN_ROOTS` 里没有它——
+**那个目录会一直涨，`cache_clean` 完全不知道它的存在。**
+
+不能直接塞进 `cleanKind`：它遍历的是「任务目录」，而 cache 下是**平铺的 mp4**。
+所以写了独立的 `cleanCache()`。
+
+**三条安全边界**（都实测过）：
+
+| 参数 | 行为 |
+|---|---|
+| 不给 `all` 也不给 `maxAgeDays` | **只统计，什么都不删** |
+| `maxAgeDays: 7` | 只删 mtime 超过 7 天的 |
+| `all: true` | 全删，但只动 `.mp4` / `.part` / `.ytdl` |
+
+实测：7 个文件里 2 个老的被删、`notes.txt` 保留。
+
+**顺手修了一个隐患**：`fixLegacyPathsInRecords()` 的循环原本也被我加进了 `cache`，
+但那个函数是遍历 JSON 记录去改路径前缀的——cache 下既没有 JSON 也没那层结构，
+放进去只是白白遍历几百 MB 的 mp4。已撤回。
+
+### 二、maxSheets 上限不再静默
+
+schema 写 `maximum: 500`，但实际被 `video.maxSheetsHardCap`（默认 200）夹住。
+用户传 300 会变成 200，**之前完全看不到**。
+
+现在回执里给 `maxSheetsCapped` / `effectiveMaxSheets` / `wantedMaxSheets`，
+被夹时还说一句「想要更多拼图，调高 maxSheetsHardCap」。
+
+### 三、新增 `toolbox_doctor`（第 13 个工具）
+
+页面底部的依赖探测现在也做成了工具，agent 可以自己查环境，
+不用让用户去翻页面。
+
+**和 health 端点的分工**：
+- health 给页面渲染用，列原始事实
+- doctor 给 agent 用，说清「缺什么会导致什么不可用」+ 磁盘占用 + 一句话建议
+
+两者共用 `collectHealth()`，避免两套逻辑漂移。
+
+**修了一个假警报**：第一版我把 `librosa: { ok: false }` 写死了，
+实际 librosa 明明可用。现在用 `probePythonDeps()` 真起 python 去 import，
+结果缓存 60 秒（每次起 python 要 1-2 秒）。
+
+**为什么必须真探测**：PATH 里可能有多个 python，系统那个往往没装 librosa。
+只看「python 存在」不够，得实际 import 一次。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| cache 清理三条边界 | 默认不删 / 按天数 / all 但保留非缓存文件 |
+| doctor 依赖探测 | 依赖齐全（不再误报 librosa） |
+| doctor 磁盘统计 | 7 个目录共 259 MB |
+| maxSheets 夹取 | 链路完整（计算→存储→回执） |
+| health 端点 | 抽取后仍正常 |
+| 工具数 | 12 → **13** |
+| 配置审计 | 43 个配置项，无死键 |
+| 其余测试 | host / smoke 全过 |
+
+---
+
 ## 0.21.0
 
 **合并社区补丁 + 实现两项后续：smart 抽帧、全局并发闸门。**

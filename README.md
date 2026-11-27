@@ -73,7 +73,7 @@ npm install -g dsh-auris-oculi
 
 ---
 
-## 十二个工具
+## 十三个工具
 
 | 工具 | 做什么 | 可靠性 |
 |---|---|---|
@@ -88,7 +88,8 @@ npm install -g dsh-auris-oculi
 | `speaker_diarize` | 一段录音谁在第几秒说 | ⚠️ 必看 caveats |
 | `toolbox_benchmark` | 这批标注值不值得用 | 好 |
 | `toolbox_job` | 查任务进度 | 好 |
-| `toolbox_cache_clean` | 清理中间产物 | 好 |
+| `toolbox_cache_clean` | 清理中间产物（含下载缓存） | 好 |
+| `toolbox_doctor` | 环境体检：依赖、可用性、磁盘占用 | 好 |
 
 **每个工具的参数、返回字段、实测限制** → [工具手册](docs/TOOLS.md)
 
