@@ -101,7 +101,7 @@ npm install -g dsh-auris-oculi
 ```
 分析         ← B 站链接 / 本地文件，自动分流
 截取与韵律    ← 子标签：截取 | 韵律与转写 | 声纹 | 批量分析 | 笔记
-配置         ← 预设 + 41 个配置项 + 缓存清理
+配置         ← 预设 + 43 个配置项 + 缓存清理
 ```
 
 各页面的功能和操作 → [界面说明](docs/UI.md)
@@ -119,8 +119,11 @@ npm install -g dsh-auris-oculi
 | 配置项 | 作用 | 默认 |
 |---|---|---|
 | `model.name` | 视觉模型 | `qwen3.5:4b` |
+| `model.maxConcurrency` | 全局同时打模型的请求上限（跨任务） | 1 |
 | `video.height` | 下载分辨率 | 1080 |
 | `video.sheetWidth` | 拼图宽度（影响 OCR 精度） | 1000 |
+| `video.density` | 抽帧策略：`budget` / `max` / `smart` | `budget` |
+| `video.sceneThreshold` | `smart` 模式的画面变化阈值 | 0.30 |
 | `speaker.backend` | 声纹后端 | `auto` |
 
 完整列表 → [配置参考](docs/CONFIG.md)

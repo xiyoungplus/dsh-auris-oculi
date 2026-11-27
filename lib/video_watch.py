@@ -203,11 +203,56 @@ def probe_best_format(url, ytdlp, max_short_side, extra=()):
     return fid
 
 
-def download_video(url, outdir, ytdlp, height=1080, extra=()):
+def _link_or_copy(src, dst):
+    """同一盘符用硬链接（零拷贝），跨盘/无权限时退回复制。"""
+    try:
+        if os.path.exists(dst):
+            os.remove(dst)
+        os.link(src, dst)
+        return
+    except Exception:
+        pass
+    shutil.copy2(src, dst)
+
+
+def _download_cache_key(vid, height, seg_start, seg_duration):
+    """缓存键：视频 id + 下载短边 + 时间段。整条与分段各存一份，互不覆盖。"""
+    key = "%s-%sp" % (vid or "video", int(height))
+    if seg_start is not None and seg_duration:
+        key += "-%d-%d" % (int(round(seg_start)), int(round(seg_duration)))
+    return key
+
+
+def download_video(url, outdir, ytdlp, height=1080, extra=(), vid=None, cache_dir=None,
+                   seg_start=None, seg_duration=None, section=True):
+    """下载视频（或只下载某一段）。
+
+    2026-11-27 补丁（社区贡献）：
+      * cache_dir：按「视频 id + 短边 + 时间段」缓存。同一视频看第二段不必重下整条；
+      * seg_start/seg_duration：给了时间段就只下这一段（yt-dlp --download-sections），
+        段下载失败自动退回整条，不影响原行为。
+    """
     video = os.path.join(outdir, "video.mp4")
     if os.path.exists(video) and os.path.getsize(video) > 10000:
         log("[download] 已存在 video.mp4，跳过下载")
         return video
+
+    cached = None
+    if cache_dir:
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            cached = os.path.join(
+                cache_dir,
+                _download_cache_key(vid, height, seg_start, seg_duration) + ".mp4")
+        except Exception as e:
+            log("[download] 缓存目录不可用（%s），这次不缓存" % e)
+            cached = None
+        if cached and os.path.exists(cached) and os.path.getsize(cached) > 10000:
+            log("[download] 缓存命中：%s（跳过下载）" % os.path.basename(cached))
+            _link_or_copy(cached, video)
+            return video
+
+    target = cached or video
     log("[download] 下载中（短边 <=%sp）..." % height)
 
     # 只用 height<=N 会把竖屏片全排除掉（竖屏的高度从 538 起，480 一个都不匹配）。
@@ -223,18 +268,60 @@ def download_video(url, outdir, ytdlp, height=1080, extra=()):
             "bv*+ba/b",
         ])
 
+    sec_args = []
+    if section and seg_start is not None and seg_duration:
+        sec_args = [
+            "--download-sections",
+            "*%.3f-%.3f" % (float(seg_start), float(seg_start) + float(seg_duration)),
+            "--force-keyframes-at-cuts",
+            "--downloader", "ffmpeg",
+        ]
+        log("[download] 只下载 %s – %s 这一段" % (
+            fmt_time(seg_start), fmt_time(seg_start + seg_duration)))
+
+    def attempt(fmt_expr, use_section):
+        argv = ["-f", fmt_expr, "--merge-output-format", "mp4", "--no-warnings"]
+        if use_section and sec_args:
+            argv += sec_args
+        argv += ["-o", target, *extra, url]
+        run(ytdlp + argv, timeout=1800)
+
     try:
-        run(ytdlp + ["-f", fmt, "--merge-output-format", "mp4", "--no-warnings",
-                     "-o", video, *extra, url], timeout=1800)
+        attempt(fmt, True)
     except RuntimeError as e:
-        # 格式挑不到（竖屏、特殊编码、需要登录等）时退回"任意最佳"，别直接失败
-        if "Requested format is not available" in str(e) or "not available" in str(e):
+        msg = str(e)
+        if sec_args:
+            # 段下载不是所有站点都支持（有些格式走不了 ffmpeg 下载器），退回整条
+            log("[download] 段下载失败（%s），退回整条下载" % msg.splitlines()[-1][:120])
+            try:
+                attempt(fmt, False)
+            except RuntimeError as e2:
+                if "not available" in str(e2):
+                    log("[download] 指定格式不可用，退回最佳可用格式重试")
+                    attempt("bv*+ba/b", False)
+                else:
+                    raise
+        elif "Requested format is not available" in msg or "not available" in msg:
+            # 格式挑不到（竖屏、特殊编码、需要登录等）时退回"任意最佳"，别直接失败
             log("[download] 指定格式不可用，退回最佳可用格式重试")
-            run(ytdlp + ["-f", "bv*+ba/b", "--merge-output-format", "mp4", "--no-warnings",
-                         "-o", video, *extra, url], timeout=1800)
+            attempt("bv*+ba/b", False)
         else:
             raise
-    if not os.path.exists(video):
+
+    if target != video:
+        if not os.path.exists(target):
+            # yt-dlp 可能在 target 旁加了后缀（video.mkv / video.webm），
+            # 之前这里 glob 的是 outdir，但 target 通常指向 cache_dir，
+            # 所以加了后缀时找不到文件、误报「下载完成但找不到 video」。
+            tdir = os.path.dirname(target) or outdir
+            stem = os.path.splitext(os.path.basename(target))[0]
+            hits = sorted(glob.glob(os.path.join(tdir, stem + '.*')))
+            if hits:
+                target = hits[0]
+        if not os.path.exists(target):
+            raise RuntimeError("下载完成但找不到 video 文件")
+        _link_or_copy(target, video)
+    elif not os.path.exists(video):
         # yt-dlp 可能加了 .mp4 后缀或其他容器
         hits = sorted(glob.glob(os.path.join(outdir, "video.*")))
         if hits:
@@ -243,6 +330,110 @@ def download_video(url, outdir, ytdlp, height=1080, extra=()):
         raise RuntimeError("下载完成但找不到 video 文件")
     log("[download] 完成：%s (%.1f MB)" % (video, os.path.getsize(video) / 1048576))
     return video
+
+
+def extract_frames_scene(video, frames_dir, interval, width, start=None,
+                         seg_duration=None, threshold=None):
+    """按画面变化抽帧（density="smart" 的实现）。
+
+    和 extract_frames 的区别：
+        固定间隔 → 不看内容，静态画面浪费帧、动态画面漏掉变化
+        画面变化 → 抓真正变了的时刻
+
+    但纯 scene 检测在静态视频（访谈、板书）上会抽不到帧，
+    所以最后会补足到「按固定间隔应有的数量」，保证下限。
+
+    阈值越高越挑（默认 0.30，越高帧越少）。
+    """
+    os.makedirs(frames_dir, exist_ok=True)
+    existing = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
+    if existing:
+        log("[frames] 已存在 %d 帧，跳过抽帧" % len(existing))
+        return existing
+
+    if threshold is None:
+        threshold = cfg_num("XIYOUNG_VIDEO_SCENE_THRESHOLD", 0.30)
+    threshold = max(0.05, min(0.9, float(threshold)))
+
+    span = ""
+    if start is not None or seg_duration is not None:
+        span = "（只处理 %s 起%s）" % (
+            fmt_time(start or 0),
+            (" 的 %s" % fmt_time(seg_duration)) if seg_duration else " 到结尾")
+    log("[frames] 按画面变化抽帧（阈值 %.2f），宽度 %d%s..." % (threshold, width, span))
+
+    # 第一遍：只抽画面变化点
+    vf = "select='gt(scene,%.3f)',scale=%d:-2" % (threshold, width)
+    cmd = [FFMPEG, "-y"]
+    if start is not None and start > 0:
+        cmd += ["-ss", "%.3f" % start]
+    cmd += ["-i", video]
+    if seg_duration is not None and seg_duration > 0:
+        cmd += ["-t", "%.3f" % seg_duration]
+    cmd += ["-vf", vf, "-fps_mode", "vfr", "-q:v", "2",
+            os.path.join(frames_dir, "frame_%05d.jpg")]
+    try:
+        run(cmd, timeout=1800)
+    except RuntimeError as e:
+        # 老版本 ffmpeg 没有 -fps_mode
+        log("[frames] scene 抽帧失败（%s），退回固定间隔" % str(e).splitlines()[-1][:80])
+        for f in glob.glob(os.path.join(frames_dir, "frame_*.jpg")):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        return extract_frames(video, frames_dir, interval, width, start, seg_duration)
+
+    scene_frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
+    log("[frames] 画面变化点：%d 帧" % len(scene_frames))
+
+    # 第二遍：算按固定间隔应该有多少帧，不够就补
+    total = seg_duration
+    if total is None:
+        total = meta_duration(video)
+    if total and interval > 0:
+        want = max(1, int(round(total / interval)))
+        if len(scene_frames) < want:
+            need = want - len(scene_frames)
+            log("[frames] 变化点只有 %d 帧，补 %d 帧到固定间隔密度" % (len(scene_frames), need))
+            # 在整段上均匀取点，只补还没覆盖的时间
+            base = len(scene_frames)
+            step = total / float(want)
+            added = 0
+            for k in range(want):
+                if added >= need:
+                    break
+                abs_t = (start or 0.0) + k * step
+                idx = base + added + 1
+                p = os.path.join(frames_dir, "frame_%05d.jpg" % idx)
+                c = [FFMPEG, "-y", "-ss", "%.3f" % abs_t, "-i", video,
+                     "-frames:v", "1", "-vf", "scale=%d:-2" % width,
+                     "-q:v", "2", p]
+                try:
+                    run(c, timeout=120)
+                    if os.path.exists(p):
+                        added += 1
+                except Exception:
+                    pass
+            log("[frames] 补了 %d 帧" % added)
+
+    frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
+    log("[frames] 共 %d 帧" % len(frames))
+    return frames
+
+
+def meta_duration(video):
+    """读视频时长（秒）。失败返回 None。"""
+    # 没有 FFPROBE 常量（其他地方是 FFMPEG.replace 现算的），这里同样处理
+    ffprobe = FFMPEG.replace("ffmpeg", "ffprobe") if FFMPEG else "ffprobe"
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", video],
+            capture_output=True, text=True, timeout=30)
+        return float((out.stdout or "").strip())
+    except Exception:
+        return None
 
 
 def extract_frames(video, frames_dir, interval, width, start=None, seg_duration=None):
@@ -703,6 +894,101 @@ def analyze_one_sheet(path, fn, m, host, model):
     return entry
 
 
+# ---------------------------------------------------------------------------
+# 全局并发闸门（2026-11-27）
+#
+# 为什么需要：每个任务独立 spawn python，各自 ThreadPoolExecutor。
+# N 个任务 × M 并发会让 N*M 个请求同时打 Ollama，显存直接爆。
+#
+# 为什么用文件锁而不是内存信号量：跨进程。DSH 起了几个 python 就几套内存。
+#
+# 为什么不用 fcntl：Windows 上不可用。用 O_CREAT|O_EXCL 更可移植。
+# ---------------------------------------------------------------------------
+
+_GATE_DIR = None
+
+
+def _gate_dir():
+    """闸门目录：优先用配置，否则落到用户数据目录。"""
+    global _GATE_DIR
+    if _GATE_DIR:
+        return _GATE_DIR
+    d = os.environ.get("XIYOUNG_MODEL_GATE_DIR")
+    if not d:
+        home = os.environ.get("DSH_HOME") or os.path.join(
+            os.path.expanduser("~"), ".dsh")
+        d = os.path.join(home, "xiyoungtools", "locks")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = None
+    _GATE_DIR = d
+    return d
+
+
+class ModelGate:
+    """跨进程的模型调用闸门。
+
+    用法：
+        with ModelGate() as slot:
+            call_model(...)
+
+    拿不到槽位时**照常放行**（记一行日志），因为：
+      - 卡死比慢一点更糟
+      - 限制是优化，不是正确性要求
+    """
+
+    def __init__(self, limit=None, timeout=180.0):
+        self.limit = limit
+        if self.limit is None:
+            try:
+                self.limit = int(cfg_num("XIYOUNG_MODEL_MAX_CONCURRENCY", 1))
+            except Exception:
+                self.limit = 1
+        self.timeout = timeout
+        self.path = None
+
+    def __enter__(self):
+        if self.limit is None or self.limit <= 0:
+            return self  # 不限制
+        d = _gate_dir()
+        if not d:
+            return self
+        deadline = time.time() + self.timeout
+        me = "%d-%d" % (os.getpid(), threading.get_ident())
+        while time.time() < deadline:
+            for i in range(self.limit):
+                p = os.path.join(d, "slot-%d" % i)
+                # 清理僵尸槽位（进程崩了没删）
+                try:
+                    if os.path.exists(p) and time.time() - os.path.getmtime(p) > 600:
+                        os.remove(p)
+                except Exception:
+                    pass
+                try:
+                    fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(fd, me.encode("ascii", "ignore"))
+                    os.close(fd)
+                    self.path = p
+                    return self
+                except FileExistsError:
+                    continue
+                except Exception:
+                    return self  # 文件系统不让写，放行
+            time.sleep(0.2)
+        log("[gate] 等了 %.0f 秒还没抢到模型槽位，这次不再等（避免卡死）" % self.timeout)
+        return self
+
+    def __exit__(self, *exc):
+        if self.path:
+            try:
+                os.remove(self.path)
+            except Exception:
+                pass
+            self.path = None
+        return False
+
+
 def analyze_sheets(sheets_dir, meta, out_json, host, model, force=False, concurrency=1):
     """分析所有拼图。
 
@@ -745,7 +1031,10 @@ def analyze_sheets(sheets_dir, meta, out_json, host, model, force=False, concurr
         def worker(fn):
             path = os.path.join(sheets_dir, fn)
             m = mby.get(fn, {})
-            entry = analyze_one_sheet(path, fn, m, host, model)
+            # 2026-11-27：全局闸门。多个任务同时跑时，跨进程限制同时打模型的
+            # 请求数，避免 N 任务 × M 并发把显存抢爆。
+            with ModelGate():
+                entry = analyze_one_sheet(path, fn, m, host, model)
             # 每完成一张就落盘，中途取消也不丢已完成的
             with lock:
                 cur = [r for r in state["results"] if r.get("file") != fn] + [entry]
@@ -780,6 +1069,37 @@ def analyze_sheets(sheets_dir, meta, out_json, host, model, force=False, concurr
             if r.get("err"):
                 log("[vision]   %s: %s" % (r.get("file"), r["err"][:120]))
     return results
+
+def write_entries(path, results):
+    """把逐格结果压成一份扁平的「时间 → 画面/动作/文字」清单。
+
+    2026-11-27 补丁（社区贡献）：analysis.json 里每张拼图是一整段模型原文，
+    agent 想用它还得自己展开、挑字段。这里额外落一份按时间排序的扁平表，
+    工具层可以直接截前 N 条返回，省掉「读文件 + 解析 markdown」两步。
+    """
+    out = []
+    for r in results or []:
+        if not r.get("ok"):
+            continue
+        for it in r.get("items") or []:
+            text = str(it.get("text") or "").strip()
+            if text in ("", "无", "没有", "None", "none", "null"):
+                text = ""
+            out.append({
+                "time": str(it.get("time") or ""),
+                "sheet": r.get("sheet"),
+                "range": r.get("range"),
+                "scene": str(it.get("scene") or "").strip(),
+                "characters": str(it.get("characters") or "").strip(),
+                "action": str(it.get("action") or "").strip(),
+                "text": text,
+            })
+    try:
+        json.dump(out, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    except Exception as e:
+        log("[entries] 写失败（不影响报告）：%s" % e)
+    return out
+
 
 def write_report(outdir, video_meta, results, args, interval, range_info=None):
     """写报告。range_info 给定时说明只看了某一段——这点必须写在最前面，
@@ -1088,7 +1408,7 @@ def main():
                     help="抽帧间隔秒数。给了就按它走，不被任何下限夹住。")
     ap.add_argument("--min-interval", type=float, default=None,
                     help="自动规划时的最小间隔（默认取配置，保底 0.05）。想抽得密就调小。")
-    ap.add_argument("--density", default=None, choices=["budget", "max"],
+    ap.add_argument("--density", default=None, choices=["budget", "max", "smart"],
                     help="budget=在 maxSheets 预算内均匀铺满（默认）；max=不管预算，按 min-interval 抽到最密")
     ap.add_argument("--start", default=None,
                     help="只看这一段：起始时间，支持 90 / 1:30 / 0:01:30")
@@ -1112,6 +1432,12 @@ def main():
     ap.add_argument("--summary", action="store_true", help="额外生成一段模型摘要")
     ap.add_argument("--force", action="store_true", help="强制重新下载/抽帧/分析")
     ap.add_argument("--cookies-from-browser", default=None, help="传给 yt-dlp，如 edge / chrome")
+    ap.add_argument("--cache-dir", default=None,
+                    help="下载缓存目录。给了就按「视频id + 短边 + 时间段」复用已下载的文件。")
+    ap.add_argument("--no-section-download", action="store_true",
+                    help="即使给了时间段也整条下载（默认只下载这一段）。")
+    ap.add_argument("--scene-threshold", type=float, default=None,
+                    help="smart 模式的画面变化阈值（0~1，默认取配置 0.30）。越高越挑。")
     args = ap.parse_args()
 
     # 参数没给就从配置取（配置来自 Host 注入的环境变量）
@@ -1244,17 +1570,30 @@ def main():
         video = meta.get("localPath") or url
         log("[download] 本地文件，跳过下载：%s" % os.path.basename(video))
     else:
-        video = download_video(url, outdir, ytdlp, args.height, extra)
+        video = download_video(url, outdir, ytdlp, args.height, extra,
+                               vid=vid, cache_dir=args.cache_dir,
+                               seg_start=seg_start, seg_duration=seg_duration,
+                               section=not args.no_section_download)
     frames_dir = os.path.join(outdir, "frames")
     sheets_dir = os.path.join(outdir, "sheets")
-    frames = extract_frames(video, frames_dir, interval, args.width,
-                           start=seg_start, seg_duration=seg_duration)
+    if getattr(args, "density", "budget") == "smart":
+        # 2026-11-27：按画面变化抽帧。静态视频（访谈/板书）会退化成固定间隔，
+        # 动态视频（切镜/动作）抓真正变了的时刻，同样帧数看更多内容。
+        frames = extract_frames_scene(video, frames_dir, interval, args.width,
+                                      start=seg_start, seg_duration=seg_duration,
+                                      threshold=getattr(args, "scene_threshold", None))
+    else:
+        frames = extract_frames(video, frames_dir, interval, args.width,
+                               start=seg_start, seg_duration=seg_duration)
     meta_sheets = build_sheets(frames, sheets_dir, per_sheet, args.sheet_width, interval,
                                time_offset=(seg_start or 0.0), per_row_arg=args.per_row)
 
     out_json = os.path.join(outdir, "analysis.json")
     results = analyze_sheets(sheets_dir, meta_sheets, out_json, args.host, args.model,
                              force=args.force, concurrency=args.concurrency)
+    # 2026-11-27 补丁（社区贡献）：额外落一份扁平清单，工具层直接消费，不必再解析 markdown。
+    entries_path = os.path.join(outdir, "entries.json")
+    entries = write_entries(entries_path, results)
     report = write_report(outdir, meta, results, args, interval,
                           range_info=({"start": seg_start, "duration": seg_duration}
                                       if seg_start is not None else None))

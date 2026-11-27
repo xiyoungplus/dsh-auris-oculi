@@ -5,6 +5,113 @@
 
 ---
 
+## 0.21.0
+
+**合并社区补丁 + 实现两项后续：smart 抽帧、全局并发闸门。**
+
+补丁来自外部贡献者，针对「长视频重复下载」和「结果要自己解析」两个痛点。
+原补丁基于 0.20.2 的发布包结构（`package/`），当前代码已到 0.20.5
+且脚本在 `lib/`，所以手工移植而非 `git apply`。
+
+### 一、跨任务下载缓存（补丁）
+
+原来 `startJob` 每次用「时间戳+uuid」建新目录，`download_video` 只在
+**同一个 outDir** 里复用 `video.mp4`。所以「先看 40–52 分钟，再看 60–70 分钟」
+会把整条视频下两遍；116 分钟的片子一次几百 MB。
+
+现在按「视频 id + 短边 + 时间段」缓存到 `$DSH_HOME/xiyoungtools/cache/video`，
+命中就**硬链接**（同盘零拷贝）到本次 run 目录，跨盘回退 `copy2`。
+
+### 二、只下载需要的那一段（补丁）
+
+`start/end/duration` 原来只影响抽帧，下载仍是整条。现在追加
+`--download-sections --force-keyframes-at-cuts --downloader ffmpeg`。
+
+**失败自动退回整条**（有些站点/格式走不了 ffmpeg 下载器），可用
+`--no-section-download` 显式关闭。
+
+### 三、逐格结果直接返回（补丁）
+
+`analysis.json` 里已有逐格结构化结果，但工具只返回 `reportPath`，
+agent 要自己读文件、解析 Markdown 找时间点。
+
+现在 python 额外落一份 `entries.json`（按时间排序的扁平表），
+`video_summary` / `toolbox_job` 直接返回前 80 条 + `entriesTotal` /
+`entriesPath`。旧 run 目录没有 `entries.json` 时从 `analysis.json` 现推。
+
+### 四、`density: "smart"`（补丁列出的后续 1）
+
+按画面变化抽帧，替代固定 `interval`。
+
+**为什么要补帧**：纯 scene 检测在静态视频（访谈、板书）上抽不到帧。
+所以先按 scene 阈值抽变化点，不足时补足到固定间隔应有的数量。
+
+实测（60 秒片段，固定间隔 5 秒应该抽 12 帧）：
+
+| 模式 | 帧数 |
+|---|---|
+| 固定间隔 | 13 |
+| **smart（阈值 0.30）** | **20** |
+| smart（阈值 0.50） | 12（触发保底补帧） |
+
+阈值可调 `video.sceneThreshold`（默认 0.30），或工具参数 `sceneThreshold`。
+
+### 五、全局并发闸门（补丁列出的后续 2）
+
+原来每个任务独立 spawn python、各自开 ThreadPoolExecutor，
+**N 个任务 × M 并发 = N×M 个请求同时打 Ollama**，显存直接爆。
+
+现在用**跨进程锁文件**做闸门（`$DSH_HOME/xiyoungtools/locks/slot-N`），
+限制同时进入模型调用的 worker 数。配置项 `model.maxConcurrency`（默认 1，0 = 不限制）。
+
+**为什么用文件锁而不是内存信号量**：内存信号量只管本进程，跨进程无效。
+**为什么不用 fcntl**：Windows 上不可用。`O_CREAT|O_EXCL` 更可移植。
+
+实测：6 个进程、上限 2，峰值并发严格 = 2，分成 3 波，平均等待 1.61 秒。
+
+**兜底**：拿不到槽位时等 180 秒后**照常放行**（记一行日志）。
+卡死比慢一点更糟，限制是优化不是正确性要求。
+僵尸槽位（进程崩溃没删）超过 10 分钟自动清理。
+
+### 修复补丁里的两个 bug
+
+**bug 1：`target != video` 时的 glob 路径错了**
+
+```python
+# 补丁原样：glob 的是 outdir，但 target 指向 cache_dir
+hits = sorted(glob.glob(os.path.join(outdir, "video.*")))
+```
+
+yt-dlp 若给文件加了后缀（`video.mkv`），在 outdir 里找不到，
+会误报「下载完成但找不到 video 文件」。改成按 `target` 所在目录 + 同 stem 查找。
+
+**bug 2：`write_entries` 定义了但没调用**
+
+补丁的 python 侧加了函数，但主流程里没有调用点，`entries.json` 不会生成。
+已补在 `analyze_sheets` 之后。
+
+### 新增配置项（41 → 43）
+
+| 配置项 | 默认 | 作用 |
+|---|---|---|
+| `video.sceneThreshold` | 0.30 | smart 模式的画面变化阈值 |
+| `model.maxConcurrency` | 1 | 全局同时打模型的请求数上限 |
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 缓存键唯一性 | 整条 / 分段 / 不同短边 各自区分 |
+| 硬链接 | inode 相同，同盘零拷贝 |
+| `write_entries` 归一化 | 「无」「None」→ 空串，`ok=False` 的跳过 |
+| smart 抽帧 | 60 秒片段：固定 13 帧 vs smart 20 帧 |
+| 全局闸门 | 6 进程上限 2，峰值严格 = 2 |
+| 端到端 | 真实视频跑通：16 帧 / 4 拼图 / 16 条 entries |
+| 配置审计 | 43 个配置项全部有通路，无死键 |
+| 其余测试 | host / smoke / regression / check_after_restart 全过 |
+
+---
+
 ## 0.20.5
 
 **Python 脚本移进 lib/，根目录从 18 个文件收到 12 个。**

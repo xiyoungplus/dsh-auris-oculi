@@ -19,7 +19,7 @@ import path from 'node:path'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const SRC = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
-const PROSODY = readFileSync(path.join(ROOT, 'prosody.py'), 'utf8')
+const PROSODY = readFileSync(path.join(ROOT, 'lib', 'prosody.py'), 'utf8')
 const CLIENT = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
 
 let failures = 0
@@ -166,7 +166,7 @@ console.log('\n=== 环境变量名一致性 ===')
 // 检查 index.js 注入的 env 名，python 侧真的在读
 const pyEnvRead = new Set([...PROSODY.matchAll(/XIYOUNG_[A-Z0-9_]+/g)].map((x) => x[0]))
 const videoRead = new Set(
-  [...readFileSync(path.join(ROOT, 'video_watch.py'), 'utf8').matchAll(/XIYOUNG_[A-Z0-9_]+/g)].map((x) => x[0])
+  [...readFileSync(path.join(ROOT, 'lib', 'video_watch.py'), 'utf8').matchAll(/XIYOUNG_[A-Z0-9_]+/g)].map((x) => x[0])
 )
 for (const name of ['XIYOUNG_CHANGES_MIN_GAP_SEC', 'XIYOUNG_CHANGES_PITCH_JUMP_SEMITONE',
   'XIYOUNG_CHANGES_REGISTER_MAX_SEMITONE']) {
@@ -180,11 +180,11 @@ for (const name of ['XIYOUNG_VIDEO_MIN_INTERVAL', 'XIYOUNG_VIDEO_DENSITY', 'XIYO
 
 // 死键检查：index 注入但 python 完全没人读的
 console.log('\n=== 死键检查（注入但无人读）===')
-const allPy = PROSODY + readFileSync(path.join(ROOT, 'video_watch.py'), 'utf8')
-      + readFileSync(path.join(ROOT, 'speaker_cluster.py'), 'utf8')
-      + readFileSync(path.join(ROOT, 'speaker_diarize.py'), 'utf8')
-      + readFileSync(path.join(ROOT, 'batch_import.py'), 'utf8')
-      + readFileSync(path.join(ROOT, 'benchmark.py'), 'utf8')
+const allPy = PROSODY + readFileSync(path.join(ROOT, 'lib', 'video_watch.py'), 'utf8')
+      + readFileSync(path.join(ROOT, 'lib', 'speaker_cluster.py'), 'utf8')
+      + readFileSync(path.join(ROOT, 'lib', 'speaker_diarize.py'), 'utf8')
+      + readFileSync(path.join(ROOT, 'lib', 'batch_import.py'), 'utf8')
+      + readFileSync(path.join(ROOT, 'lib', 'benchmark.py'), 'utf8')
 const dead = [...envInjected].filter((n) => !allPy.includes(n) && n.startsWith('XIYOUNG_'))
 if (dead.length === 0) ok('没有死键')
 else for (const d of dead) fail(d + ' 注入但所有 python 脚本都没读')

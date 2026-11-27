@@ -63,6 +63,7 @@ const BUILTIN_DEFAULTS = {
     "numCtx": 8192,
     "numPredict": 600,
     "timeoutSec": 600,
+  "maxConcurrency": 1,
     "slowModels": ["qwen3-vl:4b"],
     // 自动扫描：启动和刷新时去后端拉模型列表
     "autoDiscover": true
@@ -85,6 +86,7 @@ const BUILTIN_DEFAULTS = {
     // budget = 在 maxSheets*framesPerSheet 的预算内均匀铺满（快）
     // max    = 不管预算，按 minInterval 抽到最密（细，但慢很多）
     "density": "budget",
+    "sceneThreshold": 0.3,
     // 拼图每行几格。2 = 2x2；3 = 3 格一排，适合宽画面
     "perRow": 2,
     // maxSheets 的硬上限。默认放开到 200，一部长片也能逐 2 秒看全。
@@ -245,12 +247,14 @@ function envOverrides() {
     ['XIYOUNG_MODEL_NUM_CTX', 'model', 'numCtx', num],
     ['XIYOUNG_MODEL_NUM_PREDICT', 'model', 'numPredict', num],
     ['XIYOUNG_MODEL_TIMEOUT_SEC', 'model', 'timeoutSec', num],
+    ['XIYOUNG_MODEL_MAX_CONCURRENCY', 'model', 'maxConcurrency', num],
     ['XIYOUNG_VIDEO_HEIGHT', 'video', 'height', num],
     ['XIYOUNG_VIDEO_SHEET_WIDTH', 'video', 'sheetWidth', num],
     ['XIYOUNG_VIDEO_FRAME_WIDTH', 'video', 'frameWidth', num],
     ['XIYOUNG_VIDEO_FRAMES_PER_SHEET', 'video', 'framesPerSheet', num],
     ['XIYOUNG_VIDEO_MAX_SHEETS', 'video', 'maxSheets', num],
     ['XIYOUNG_VIDEO_CONCURRENCY', 'video', 'concurrency', num],
+    ['XIYOUNG_VIDEO_SCENE_THRESHOLD', 'video', 'sceneThreshold', num],
     ['XIYOUNG_AUDIO_CHUNK_SEC', 'audio', 'chunkSec', num],
     ['XIYOUNG_AUDIO_OVERLAP_SEC', 'audio', 'overlapSec', num],
     ['XIYOUNG_AUDIO_F0_MIN', 'audio', 'f0Min', num],
@@ -803,6 +807,36 @@ function buildJobResult(job) {
   const analyzed = Array.isArray(analysis) ? analysis.filter((entry) => entry && entry.ok).length : 0
   const total = Array.isArray(analysis) ? analysis.length : 0
 
+  // 2026-11-27 补丁（社区贡献）：扁平清单（时间 → 场景/动作/文字），给 agent 直接消费。
+  // python 那边新版本会写 entries.json；旧版本的 run 目录没有，就从 analysis.json 现推。
+  const entriesPath = path.join(outDir, 'entries.json')
+  let entries = []
+  try {
+    if (existsSync(entriesPath)) {
+      const raw = JSON.parse(readFileSync(entriesPath, 'utf8'))
+      if (Array.isArray(raw)) entries = raw
+    }
+  } catch {
+    entries = []
+  }
+  if (!entries.length && Array.isArray(analysis)) {
+    for (const sheet of analysis) {
+      if (!sheet || !sheet.ok) continue
+      for (const it of sheet.items || []) {
+        const text = String(it?.text ?? '').trim()
+        entries.push({
+          time: String(it?.time ?? ''),
+          sheet: sheet.sheet,
+          range: sheet.range,
+          scene: String(it?.scene ?? '').trim(),
+          characters: String(it?.characters ?? '').trim(),
+          action: String(it?.action ?? '').trim(),
+          text: ['', '无', '没有', 'None', 'none', 'null'].includes(text) ? '' : text
+        })
+      }
+    }
+  }
+
   const sheetsDir = path.join(outDir, 'sheets')
   let sheetFiles = []
   try {
@@ -815,6 +849,10 @@ function buildJobResult(job) {
     outDir,
     reportPath: path.join(outDir, 'report.md'),
     summaryPath: path.join(outDir, 'summary.md'),
+    analysisPath,
+    entriesPath,
+    entries,
+    entriesTotal: entries.length,
     sheets: sheetFiles.length,
     analyzed,
     total,
@@ -957,6 +995,7 @@ function pythonEnv(extra = {}) {
     XIYOUNG_MODEL_NUM_CTX: String(c.model.numCtx || 8192),
     XIYOUNG_MODEL_NUM_PREDICT: String(c.model.numPredict || 600),
     XIYOUNG_MODEL_TIMEOUT_SEC: String(c.model.timeoutSec || 600),
+    XIYOUNG_MODEL_MAX_CONCURRENCY: String(c.model.maxConcurrency ?? 1),
     // 视频：这一组之前漏了，导致 config 里的 video.* 对页面上发起的分析完全无效，
     // video_watch.py 只能回落到它自己的默认值（480 / 12 / 800）。
     XIYOUNG_VIDEO_HEIGHT: String(c.video.height || 480),
@@ -969,6 +1008,7 @@ function pythonEnv(extra = {}) {
     // 短视频怎么调都是 1 秒/帧。现在这三个一起决定"看多细"。
     XIYOUNG_VIDEO_MIN_INTERVAL: String(c.video.minInterval ?? 1.0),
     XIYOUNG_VIDEO_DENSITY: String(c.video.density || 'budget'),
+    XIYOUNG_VIDEO_SCENE_THRESHOLD: String(c.video.sceneThreshold ?? 0.3),
     XIYOUNG_VIDEO_PER_ROW: String(c.video.perRow || 2),
     // 音频
     XIYOUNG_AUDIO_CHUNK_SEC: String(c.audio.chunkSec || 8),
@@ -1048,6 +1088,9 @@ function startJob(input, options) {
   const minInterval = Number(options.minInterval)
   if (Number.isFinite(minInterval) && minInterval > 0) args.push('--min-interval', String(minInterval))
   if (options.density) args.push('--density', String(options.density))
+  if (options.sceneThreshold !== undefined && options.sceneThreshold !== null) {
+    args.push('--scene-threshold', String(options.sceneThreshold))
+  }
   const framesPerSheet = Number(options.framesPerSheet)
   if (Number.isFinite(framesPerSheet) && framesPerSheet > 0) args.push('--frames-per-sheet', String(framesPerSheet))
   const perRow = Number(options.perRow)
@@ -1073,6 +1116,12 @@ function startJob(input, options) {
   if (options.duration !== undefined && options.duration !== null && String(options.duration).trim() !== '') {
     args.push('--duration', String(options.duration).trim())
   }
+  // 2026-11-27 补丁（社区贡献）：跨任务下载缓存。默认落到 $DSH_HOME/xiyoungtools/cache/video，
+  // 同一视频看第二段时按「视频id + 短边 + 时间段」命中，不再重下整条。
+  const cacheDir = options.cacheDir
+    ? String(options.cacheDir)
+    : path.join(TOOLBOX_HOME, 'cache', 'video')
+  args.push('--cache-dir', cacheDir)
 
   appendLog(job, '[toolbox] 启动分析：' + input + '\n[toolbox] 模型：' + model)
 
@@ -1126,6 +1175,10 @@ async function waitForJob(job, timeoutMs) {
   return job
 }
 
+// 2026-11-27 补丁（社区贡献）：逐格结果只回前 80 条，剩下的给路径。
+// 80 条大约 4-6 KB，对上下文友好；要看全的读 entriesPath。
+const TOOL_ENTRIES_MAX = 80
+
 function finishedToolResult(job, includeReport) {
   const report = readJobReport(job)
   const titleMatch = report.report.match(/^#\s*《(.+?)》/m)
@@ -1165,6 +1218,15 @@ function finishedToolResult(job, includeReport) {
     sheets: report.sheets,
     analyzed: report.analyzed,
     total: report.total,
+    // 2026-11-27 补丁（社区贡献）：逐格结构化结果（按时间排序），
+    // agent 不必再读 report.md 找时间点。只回前 80 条，剩下的给路径。
+    entries: Array.isArray(job.result && job.result.entries)
+      ? job.result.entries.slice(0, TOOL_ENTRIES_MAX)
+      : [],
+    entriesTotal: (job.result && job.result.entriesTotal) || 0,
+    entriesOmitted: Math.max(0, ((job.result && job.result.entriesTotal) || 0) - TOOL_ENTRIES_MAX),
+    analysisPath: (job.result && job.result.analysisPath) || path.join(job.outDir, 'analysis.json'),
+    entriesPath: (job.result && job.result.entriesPath) || path.join(job.outDir, 'entries.json'),
     summary: summary || full.slice(0, 800),
     report: includeReport ? full.slice(0, limit) : '',
     reportTruncated: Boolean(includeReport && full.length > limit),
@@ -1403,6 +1465,9 @@ function startAnalyze(source, options = {}) {
     if (options.interval) videoArgs.push('--interval', String(options.interval))
     if (options.minInterval) videoArgs.push('--min-interval', String(options.minInterval))
     if (options.density) videoArgs.push('--density', String(options.density))
+  if (options.sceneThreshold !== undefined && options.sceneThreshold !== null) {
+    videoArgs.push('--scene-threshold', String(options.sceneThreshold))
+  }
     if (options.framesPerSheet) videoArgs.push('--frames-per-sheet', String(options.framesPerSheet))
     if (options.perRow) videoArgs.push('--per-row', String(options.perRow))
     if (options.concurrency && options.concurrency > 1) {
@@ -1553,7 +1618,7 @@ const analyzeTool = {
       maxSheets: { type: 'integer', minimum: 1, maximum: 500, description: '画面最多拼图张数，默认 12。想看得更全就调大——本机不怕慢的话给 100 也不过分。' },
       interval: { type: 'number', minimum: 0.05, maximum: 3600, description: '抽帧间隔秒数。给了就严格按它走（不再被 1 秒下限夹住），0.5 表示每半秒看一帧。' },
       minInterval: { type: 'number', minimum: 0.05, maximum: 60, description: '自动规划时的间隔下限，默认取配置（1.0）。配合 density:"max" 用。' },
-      density: { type: 'string', enum: ['budget', 'max'], description: 'budget=在 maxSheets 预算内均匀铺满（默认）；max=不管预算，抽到 minInterval 那么密。本机不在意时间就选 max。' },
+      density: { type: 'string', enum: ['budget', 'max', 'smart'], description: 'budget=在 maxSheets 预算内均匀铺满（默认）；max=不管预算，抽到 minInterval 那么密。本机不在意时间就选 max。' },
       framesPerSheet: { type: 'integer', minimum: 1, maximum: 12, description: '每张拼图放几帧，默认 4。9 能一屏看更多但每格更小。' },
       perRow: { type: 'integer', minimum: 1, maximum: 4, description: '拼图每行几格，默认 2。' },
       sheetWidth: { type: 'integer', minimum: 256, maximum: 2400, description: '拼图总宽，默认取配置（1000）。单格宽 = 这个值 ÷ perRow。' },
@@ -1888,7 +1953,7 @@ const videoSummaryTool = {
       },
       density: {
         type: 'string',
-        enum: ['budget', 'max'],
+        enum: ['budget', 'max', 'smart'],
         description: 'budget=在 maxSheets 预算内均匀铺满（默认，快）；max=不管预算，按 minInterval 抽到最密（细，慢）。'
       },
       framesPerSheet: {
