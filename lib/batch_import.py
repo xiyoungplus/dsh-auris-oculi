@@ -297,7 +297,10 @@ def main():
     files = find_audio(root)
     print("[batch] 找到 %d 个音频" % len(files), flush=True)
     if not files:
-        raise SystemExit("这个目录里没有音频文件")
+        raise SystemExit(
+            "这个文件夹里没有能分析的音频。\n"
+            "支持的格式是 wav / mp3 / m4a / flac。"
+        )
 
     os.makedirs(args.outdir, exist_ok=True)
     workdir = os.path.join(args.outdir, "_work")

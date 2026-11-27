@@ -57,22 +57,95 @@ def cfg_str(name, default):
     return _env_str(name, default)
 
 
-def _require_deps():
-    """缺依赖时给一句人话，而不是抛 ModuleNotFoundError。"""
+# 我们需要但可能缺的包 → (import 名, pip 名, 中文名, 缺了影响什么)
+CORE_DEPS = [
+    ("numpy", "numpy", "数值计算", "全部功能"),
+    ("scipy", "scipy", "信号处理", "音高振荡测量"),
+    ("librosa", "librosa", "音频分析", "韵律分析、批量导入"),
+    ("soundfile", "soundfile", "读写音频", "韵律分析、批量导入"),
+]
+
+
+def missing_core_deps():
+    """返回缺的包列表（pip 名）。"""
     missing = []
-    for mod, pip in (("numpy", "numpy"), ("librosa", "librosa"), ("soundfile", "soundfile")):
+    for mod, pip_name, _cn, _why in CORE_DEPS:
         try:
             __import__(mod)
         except ImportError:
-            missing.append(pip)
-    if missing:
-        raise SystemExit(
-            "缺少 Python 依赖：" + " ".join(missing) + "\n"
-            "装一下：\n"
-            "  python -m pip install " + " ".join(missing) + "\n"
-            "如果用 DSH 自带的 Python：\n"
-            "  %USERPROFILE%\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe -m pip install " + " ".join(missing)
-        )
+            missing.append(pip_name)
+    return missing
+
+
+def install_deps(pkgs=None, on_line=None, timeout=1800):
+    """装 Python 依赖到当前解释器（全局，所有插件共享）。
+
+    2026-11-27 加。设计依据：
+      - 装到全局而不加 --target：实测往 DSH 的 Python 装包，
+        0 个已有包被改版本、payloadDigest 不变、DSH 一切正常。
+        装到插件私有目录会让每个插件各存一份 numpy/scipy（几百 MB 重复）。
+      - 不锁版本：实测 numpy 2.3.5 与 2.5.5 在 26-27 个特征上逐位相同，
+        锁死版本反而会和其他插件冲突、丢掉修复。
+      - 只装缺的，不重复装。
+
+    返回 (ok, message)。on_line 是逐行回调（给页面显示进度用）。
+    """
+    import subprocess as _sp
+    import sys as _sys
+
+    todo = list(pkgs) if pkgs else missing_core_deps()
+    if not todo:
+        return True, "依赖齐全，没有要装的"
+
+    cmd = [_sys.executable, "-m", "pip", "install", "--no-cache-dir"] + todo
+    try:
+        proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                         text=True, encoding="utf-8", errors="replace", bufsize=1)
+        lines = []
+        for line in proc.stdout or []:
+            line = line.rstrip("\n")
+            if line:
+                lines.append(line)
+                if on_line:
+                    try:
+                        on_line(line)
+                    except Exception:
+                        pass
+        proc.wait(timeout=timeout)
+        if proc.returncode == 0:
+            return True, "装好了：" + " ".join(todo)
+        tail = "\n".join(lines[-8:])
+        return False, "安装失败（退出码 %d）：\n%s" % (proc.returncode, tail)
+    except _sp.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return False, "安装超时（超过 %d 秒），可能是网络慢" % timeout
+    except Exception as e:
+        return False, "安装出错：%s" % str(e)[:200]
+
+
+def _require_deps():
+    """缺核心依赖时给人话提示。
+
+    2026-11-27 改：不再甩 pip 命令（用户看不懂），改成
+    「告诉用户下一步做什么」——在 DSH 里说一句话就行。
+    """
+    missing = missing_core_deps()
+    if not missing:
+        return
+    names = []
+    for mod, pip_name, cn, why in CORE_DEPS:
+        if pip_name in missing:
+            names.append("%s（%s，缺了%s用不了）" % (cn, pip_name, why))
+    raise SystemExit(
+        "还缺几个 Python 组件，装了才能用：\n"
+        "  " + "\n  ".join(names) + "\n"
+        "\n"
+        "怎么装：对 DSH 说一句「帮我装 audioware 的依赖」就行，它会处理。\n"
+        "（手动装也可以：本机 Python 里执行 pip install " + " ".join(missing) + "）"
+    )
 
 # 模块级 import 之前先检查一遍：numpy 缺失时直接给安装提示，
 # 而不是抛一个 ModuleNotFoundError 让调用方去猜。
@@ -479,7 +552,10 @@ def decode_to_wav(source, outdir, start=None, duration=None):
     """用 ffmpeg 统一解码成 16kHz 单声道 wav，后面所有分析都用它。"""
     ff = find_ffmpeg()
     if not ff:
-        raise SystemExit("找不到 ffmpeg，请装 ffmpeg 或设置 XIYOUNG_FFMPEG")
+        raise SystemExit(
+            "视频和音频功能需要一个叫 ffmpeg 的小工具，现在还没装。\n"
+            "对 DSH 说一句「帮我装 ffmpeg」就行，它会处理好。"
+        )
 
     # 链接先落地：ffmpeg 只会读文件，读不了网页。
     # 已经抓好的话（--start/--duration 由 yt-dlp 精确切过），这里不再切第二遍。
@@ -3176,6 +3252,22 @@ def write_markdown(path, summary, curves, meta):
 
 
 def main():
+    # 2026-11-27：--install-deps 模式。
+    # Host 路由不自己判断缺什么（会和我们漂移），而是调这个入口。
+    import sys as _sys
+    if "--install-deps" in _sys.argv:
+        pkgs = None
+        if "--packages" in _sys.argv:
+            try:
+                i = _sys.argv.index("--packages")
+                raw = _sys.argv[i + 1] if i + 1 < len(_sys.argv) else ""
+                pkgs = [p.strip() for p in raw.split(",") if p.strip()] or None
+            except Exception:
+                pkgs = None
+        ok, msg = install_deps(pkgs)
+        print(msg)
+        _sys.exit(0 if ok else 1)
+
     ap = argparse.ArgumentParser()
     ap.add_argument("source")
     ap.add_argument("--outdir", required=True)

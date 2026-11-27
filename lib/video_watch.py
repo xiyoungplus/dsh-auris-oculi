@@ -146,7 +146,11 @@ def which_ytdlp():
         return [sys.executable, "-m", "yt_dlp"]
     except Exception:
         pass
-    raise RuntimeError("找不到 yt-dlp：请先 pip install --user yt-dlp，或用 YTDLP 环境变量指定路径。")
+    raise RuntimeError(
+            "下载 B 站视频需要一个叫 yt-dlp 的小工具，现在还没装。\n"
+            "对 DSH 说一句「帮我装 yt-dlp」就行。\n"
+            "（本地文件不受影响，只有在线链接需要它）"
+        )
 
 
 def fetch_meta(url, ytdlp, extra=()):
@@ -551,7 +555,10 @@ def build_sheets(frames, sheets_dir, frames_per_sheet, sheet_width, interval, ti
             pass
 
     if Image is None:
-        raise RuntimeError("缺少 Pillow：请用 DSH 自带 Python 运行（含 Pillow），或 pip install pillow。")
+        raise RuntimeError(
+            "处理图片需要一个叫 Pillow 的组件，现在还没装。\n"
+            "打开插件页面，点「检查环境」可以一键装上。"
+        )
 
     per_row = max(1, int(per_row_arg or 2))
     rows = int(math.ceil(frames_per_sheet / per_row))
@@ -1013,7 +1020,11 @@ def analyze_sheets(sheets_dir, meta, out_json, host, model, force=False, concurr
     mby = {m["file"]: m for m in meta}
     files = sorted([f for f in os.listdir(sheets_dir) if f.endswith(".jpg")])
     if not files:
-        raise RuntimeError("没有拼图可分析")
+        raise RuntimeError(
+            "视频里没有抽到足够的画面。\n"
+            "可能是这段时间没画面变化，或者视频太短。\n"
+            "试试去掉时间段限制，或者把 interval 调小一点。"
+        )
 
     todo = [fn for fn in files if force or fn not in done]
     if not todo:

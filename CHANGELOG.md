@@ -5,6 +5,93 @@
 
 ---
 
+## 0.23.0
+
+**安装体验改造：从「29 条命令」到「缺什么点一下」。**
+
+背景：这个插件依赖多（Python 包 + ffmpeg + yt-dlp + Ollama）。
+原来的 INSTALL.md 有 457 行、29 条命令，对不熟悉命令行的用户等于劝退。
+
+### 一、可以自动装 Python 依赖了
+
+新增 `/xiyoungtools/install-deps` 路由和 `prosody.py --install-deps`。
+
+**三条设计都有实测依据：**
+
+**① 装到全局，不加 `--target`**
+
+实测：往 DSH 的 Python 里装一个包（pytest），
+- 新增 5 个包，**0 个删除、0 个版本变化**
+- 9 个关键依赖（numpy/scipy/librosa/numba/llvmlite/soundfile/sklearn/resemblyzer/sherpa）**全部未变**
+- `runtime.json` 的 `payloadDigest` **没变**
+- DSH health 一致，工具正常跑
+
+装到插件私有目录 (`vendor/`) 的坏处：每个插件各存一份 numpy+scipy（约 400 MB 重复），
+用户看不见也删不干净。**所以走全局。**
+
+**② 不锁版本**
+
+实测 numpy 2.3.5 与 2.5.5：3 条音频、26-27 个特征，**逐位相同**。
+
+原因：我们只用基础运算（median/std/log2/percentile），这些在 1.x→2.x 语义没变。
+
+锁版本反而有害——和其他插件的需求冲突，且永远收不到修复。
+
+**③ 只装缺的**
+
+先查再装，已经有了就跳过。
+
+### 二、错误提示说人话
+
+**A 类（含 PATH / XIYOUNG_ / pip install 等术语）：13 条 → 0 条**
+
+改写前后：
+
+```
+之前：找不到 ffmpeg，请装 ffmpeg 或设置 XIYOUNG_FFMPEG
+现在：视频和音频功能需要一个叫 ffmpeg 的小工具，现在还没装。
+      对 DSH 说一句「帮我装 ffmpeg」就行，它会处理好。
+
+之前：缺少 Pillow：请用 DSH 自带 Python 运行（含 Pillow），或 pip install pillow。
+现在：处理图片需要一个叫 Pillow 的组件，现在还没装。
+      打开插件页面，点「检查环境」可以一键装上。
+```
+
+### 三、doctor 的 fix 字段区分「能自动装」和「需要人做」
+
+每个缺失项现在带 `autoInstall`：
+
+| 依赖 | 能自动装 | 做法 |
+|---|---|---|
+| librosa / scipy / soundfile / numpy | ✅ | 点按钮 |
+| yt-dlp | ✅ | 点按钮 |
+| resemblyzer | ✅ | 点按钮 |
+| **ffmpeg** | ❌ | 让 DSH 用包管理器装 |
+| **Ollama / 视觉模型** | ❌ | 让 DSH 装 + 拉模型 |
+
+**为什么 ffmpeg 不自动下载：** 实测下载速度 **28.8 KB/s**，
+113.9 MB 要 **67 分钟**。换源也一样（npmmirror 25.3 KB/s，GitHub 超时）。
+让 DSH 用 winget/choco 装，走包管理器比直连快得多。
+
+### 四、没做的
+
+- **不用 vendor 目录**：改成全局，理由见上
+- **不锁版本**：实测无影响
+- **不拆包**：13 个工具时拆不划算
+- **不做小白/开发者分版文档**：交接书等材料已经够，懂开发的能翻到
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 全局装包对 DSH 的影响 | 0 个包被改，digest 不变 |
+| numpy 2.3.5 vs 2.5.5 | 26-27 个特征逐位相同 |
+| `--install-deps` 真装一个包 | 成功（iniconfig） |
+| A 类错误提示 | 13 → **0** |
+| 测试套件 | host/smoke/audit/oscillation/regression 全过 |
+
+---
+
 ## 0.22.0
 
 **重做「微颤」测量：`jitter` → `pitchOscillation`。**

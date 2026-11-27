@@ -88,7 +88,10 @@ def to_wav16k(src, outdir, tag):
     dst = os.path.join(outdir, "dec_%s.wav" % tag)
     ff = P.find_ffmpeg()
     if not ff:
-        raise RuntimeError("找不到 ffmpeg")
+        raise RuntimeError(
+            "这个功能需要 ffmpeg，现在还没装。\n"
+            "对 DSH 说一句「帮我装 ffmpeg」就行。"
+        )
     cmd = [ff, "-hide_banner", "-loglevel", "error", "-y", "-i", src,
            "-vn", "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le", dst]
     res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -112,11 +115,18 @@ def main():
     files = find_audio(args.dir, exclude=args.outdir)
     print("[cluster] 找到 %d 个音频" % len(files), flush=True)
     if not files:
-        raise SystemExit("这个文件夹里没有音频文件")
+        raise SystemExit(
+        "这个文件夹里没有能分析的音频。\n"
+        "支持的格式是 wav / mp3 / m4a / flac。"
+    )
 
     enc = P.load_speaker_encoder()
     if enc is None:
-        raise SystemExit("说话人模型不可用：" + (P._SPEAKER_ERROR or "未安装 resemblyzer"))
+        raise SystemExit(
+            "声纹功能需要额外的模型，现在还用不了。\n"
+            "打开插件页面点「检查环境」，能自动装的会给按钮。\n"
+            "（细节：" + (P._SPEAKER_ERROR or "缺 resemblyzer") + "）"
+        )
 
     records = []
     skipped = []
@@ -138,7 +148,10 @@ def main():
             skipped.append({"file": rel, "reason": str(e)[:100]})
 
     if not records:
-        raise SystemExit("没有可用的音频")
+        raise SystemExit(
+        "这些文件里没有能用于声纹分析的音频。\n"
+        "声纹分析需要至少 1 秒的清晰人声。"
+    )
 
     print("[cluster] 聚类 %d 条..." % len(records), flush=True)
     groups = P.cluster_speakers([r["embedding"] for r in records], args.seed, args.merge)

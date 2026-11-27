@@ -74,7 +74,10 @@ def to_wav16k(src, outdir):
     dst = os.path.join(outdir, "input.wav")
     ff = P.find_ffmpeg()
     if not ff:
-        raise RuntimeError("找不到 ffmpeg")
+        raise RuntimeError(
+            "这个功能需要 ffmpeg，现在还没装。\n"
+            "对 DSH 说一句「帮我装 ffmpeg」就行。"
+        )
     cmd = [ff, "-hide_banner", "-loglevel", "error", "-y", "-i", src,
            "-vn", "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le", dst]
     res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")

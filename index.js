@@ -1951,7 +1951,9 @@ const toolboxDoctorTool = {
         label: 'ffmpeg',
         value: h.ffmpeg,
         blocks: ['视频逐帧观看', '片段截取', '韵律分析', '一站式分析'],
-        fix: 'choco install ffmpeg  或  winget install Gyan.FFmpeg'
+        fix: '对 DSH 说一句「帮我装 ffmpeg」，它会用系统包管理器装。'
+        + '（手动装：winget install Gyan.FFmpeg）',
+        autoInstall: false
       },
       python: {
         ok: Boolean(h.pythonExists),
@@ -1968,7 +1970,9 @@ const toolboxDoctorTool = {
           label: 'librosa',
           value: lib.ok ? '可 import' : (lib.err || null),
           blocks: ['韵律分析', '批量导入'],
-          fix: 'pip install librosa soundfile scipy numpy'
+          fix: '点下面的按钮自动装（约 400 MB，1-2 分钟）',
+        autoInstall: true,
+        packages: ['librosa', 'soundfile', 'scipy', 'numpy']
         }
       })(),
       ytdlp: {
@@ -1976,28 +1980,34 @@ const toolboxDoctorTool = {
         label: 'yt-dlp',
         value: h.ytdlp,
         blocks: ['B 站链接下载'],
-        fix: 'pip install -U yt-dlp'
+        fix: '点下面的按钮自动装（约 15 MB）',
+        autoInstall: true,
+        packages: ['yt-dlp']
       },
       ollama: {
         ok: Boolean(h.ollamaOK),
         label: 'Ollama',
         value: h.ollama,
         blocks: ['视频逐帧观看'],
-        fix: 'winget install Ollama.Ollama'
+        fix: '对 DSH 说一句「帮我装 Ollama」。装完要重启一次 DSH。',
+        autoInstall: false
       },
       visionModel: {
         ok: Array.isArray(h.models) && h.models.length > 0,
         label: '视觉模型',
         value: (h.models || []).slice(0, 3).join(', ') || null,
         blocks: ['视频逐帧观看'],
-        fix: 'ollama pull qwen3.5:4b'
+        fix: '对 DSH 说一句「帮我拉 qwen3.5:4b 模型」（约 3 GB）。',
+        autoInstall: false
       },
       resemblyzer: {
         ok: Boolean(h.speakerModelAvailable),
         label: '声纹模型',
         value: h.speakerModelAvailable ? '可用' : null,
         blocks: ['声纹比对', '说话人聚类/分离'],
-        fix: 'pip install resemblyzer webrtcvad-wheels'
+        fix: '点下面的按钮自动装（约 20 MB）',
+        autoInstall: true,
+        packages: ['resemblyzer', 'webrtcvad-wheels']
       }
     }
 
@@ -5964,6 +5974,57 @@ export function apply(ctx) {
   register('/xiyoungtools/health', async (req, res) => {
     if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' })
     sendJson(res, 200, await collectHealth())
+  })
+
+  /**
+   * 装 Python 依赖（2026-11-27）。
+   *
+   * 设计依据（都有实测）：
+   *   - 装到**全局**解释器，不加 --target：实测往 DSH 的 Python 装包，
+   *     0 个已有包被改版本、payloadDigest 不变、DSH 一切正常。
+   *     装到插件私有目录会让每个插件各存一份 numpy/scipy（几百 MB 重复）。
+   *   - **不锁版本**：实测 numpy 2.3.5 与 2.5.5 在 26-27 个特征上逐位相同。
+   *     锁死版本反而和其他插件冲突、丢掉修复。
+   *   - 只装缺的。
+   *
+   * 同步返回（pip 通常 30-90 秒）。前端显示「正在装」再加等待。
+   */
+  register('/xiyoungtools/install-deps', async (req, res) => {
+    if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' })
+    if (!originOK(req)) return sendJson(res, 403, { error: 'origin not allowed' })
+    if (!contentTypeOK(req)) return sendJson(res, 415, { error: 'content-type must be application/json' })
+    try {
+      const body = await readBody(req)
+      const want = Array.isArray(body.packages) ? body.packages.map(String) : null
+      const script = PROSODY_SCRIPT
+      // 交给 python 侧做，因为「缺什么」的判断逻辑在那边，避免两套漂移
+      const args = ['--install-deps']
+      if (want && want.length) {
+        args.push('--packages', want.join(','))
+      }
+      const result = await new Promise((resolve) => {
+        const child = spawn(PYTHON, [script].concat(args), {
+          windowsHide: true,
+          env: pythonEnv(),
+        })
+        let out = ''
+        let err = ''
+        child.stdout.on('data', (d) => { out += String(d) })
+        child.stderr.on('data', (d) => { err += String(d) })
+        child.on('close', (code) => resolve({ code, out, err }))
+        child.on('error', (e) => resolve({ code: -1, out, err: String(e && e.message) }))
+      })
+      // 装完清缓存，让下次 health 重新探测
+      _pyDepsCache = { at: 0, value: null }
+      const ok = result.code === 0
+      sendJson(res, ok ? 200 : 500, {
+        ok,
+        installed: ok,
+        message: ok ? (result.out.trim() || '装好了').slice(-400) : (result.err || result.out || '').slice(-600),
+      })
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: String(error && error.message ? error.message : error) })
+    }
   })
 
   register('/xiyoungtools/video-watch', async (req, res) => {
