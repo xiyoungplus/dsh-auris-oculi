@@ -99,12 +99,12 @@
     },
     "icon": "icon.svg"
   },
-  "homepage": "https://github.com/xiyoung/dsh-auris-oculi",
+  "homepage": "https://github.com/xiyoungplus/dsh-auris-oculi",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xiyoung/dsh-auris-oculi.git"
+    "url": "git+https://github.com/xiyoungplus/dsh-auris-oculi.git"
   },
   "bugs": {
-    "url": "https://github.com/xiyoung/dsh-auris-oculi/issues"
+    "url": "https://github.com/xiyoungplus/dsh-auris-oculi/issues"
   }
 }
