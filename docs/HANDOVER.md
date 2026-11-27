@@ -74,7 +74,7 @@
 node scripts/test-host.mjs      # 64 条断言：路由/配置/清理/labels 保护/编码/多后端
 node scripts/smoke.mjs          # client.js 真渲染
 node scripts/audit-config.mjs   # 41 个配置项都有通路
-python regression_content_class.py   # nonverbal 分类未退化
+python scripts/regression_content_class.py   # nonverbal 分类未退化
 ```
 
 `test-host.mjs` 用临时目录 + `DSH_HOME` 隔离，**不碰真实数据**。
@@ -140,16 +140,20 @@ python regression_content_class.py   # nonverbal 分类未退化
 | `prosody.py` | 3082 | 韵律 + 频谱 + 包络 + 语速 + 转写 + 变化点 + 多后端嵌入 |
 | `video_watch.py` | 1280 | 视频抽帧 + 拼图 + 视觉模型 + 模型后端抽象 |
 | `speaker_diarize.py` | 429 | 单文件分离（含可信度判断） |
-| `speaker_compare.py` | 278 | 两条音频比对（同步工具） |
 | `batch_import.py` | 354 | 批量导入 + 标签推断 |
 | `benchmark.py` | 300 | 特征判别力评测 |
+| `speaker_compare.py` | 278 | 两条音频比对（同步工具） |
 | `speaker_cluster.py` | 191 | 批量聚类 |
-| `regression_content_class.py` | 212 | nonverbal 分类回归测试 |
 | `list_models.py` | 31 | 扫描模型后端 |
 | `cordis.patch.yml` | 5 | DSH 插件挂载声明 |
 | `scripts/test-host.mjs` | — | Host 半单测（64 条断言，隔离目录） |
 | `scripts/smoke.mjs` | — | client.js 真渲染冒烟 |
 | `scripts/audit-config.mjs` | — | 41 个配置项 × 工具参数 × 环境变量交叉检查 |
+| `scripts/regression_content_class.py` | — | nonverbal 分类回归（需 testdata/） |
+| `scripts/check_after_restart.py` | — | 重启后自检（编码修复是否生效） |
+
+**剩下的 8 个 `.py` 是核心脚本，被 `index.js` 的 spawn 调用，不能移。**
+测试和辅助脚本都在 `scripts/` 下——它们需要 `ROOT` 在 `sys.path` 里才能 import `prosody`。
 
 ### 关键机制
 
@@ -271,7 +275,7 @@ python regression_content_class.py   # nonverbal 分类未退化
 原因是「边际/散布」始终 0.06~0.08——各类在特征空间里挤在一起。
 非言语发声（啊——、哭喊）情绪在声学上极其显著，真实说话则被语言内容淹没。
 
-**结论**：能做「测量」，不能做「判断」。详见 `docs/emotion-data-findings.md`。
+**结论**：能做「测量」，不能做「判断」。详见 `docs/emotion-findings.md`。
 
 ### ⚠️ 说话人分离：不可靠，必须看 caveats
 

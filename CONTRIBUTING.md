@@ -50,7 +50,7 @@
 | `qwen3-vl:4b` 返回空 | 已知 | 请用 `qwen3.5:4b` |
 | `webrtcvad` 装不上 | 已知 | 必须用 `webrtcvad-wheels` |
 
-完整清单见 `HANDOVER.md` 的「四、已知的失败结论」，
+完整清单见 `docs/HANDOVER.md` 的「四、已知的失败结论」，
 以及 `docs/` 下的两份实测报告。
 
 ---
@@ -78,11 +78,14 @@ New-Item -ItemType Junction -Path "$prof\node_modules\dsh-auris-oculi" `
 **改完代码必须跑这四条**：
 
 ```powershell
-node scripts/test-host.mjs        # 64 条断言：路由/配置/清理/编码/多后端
-node scripts/smoke.mjs            # client.js 真渲染
-node scripts/audit-config.mjs     # 41 个配置项都有通路
-python regression_content_class.py   # nonverbal 分类未退化
+node scripts/test-host.mjs                      # 64 条断言：路由/配置/清理/编码/多后端
+node scripts/smoke.mjs                          # client.js 真渲染
+node scripts/audit-config.mjs                   # 41 个配置项都有通路
+python scripts/regression_content_class.py      # nonverbal 分类（需要 testdata/）
 ```
+
+`regression_content_class.py` 依赖 `testdata/`（44 MB 测试音频），
+不在仓库里。没有数据时会跳过，不算失败。
 
 外加语法检查：
 
@@ -114,7 +117,7 @@ python -c "import ast,glob; [ast.parse(open(f,encoding='utf-8').read()) for f in
 - 路由和工具名被前端和调用方写死
 - 环境变量在用户的 `config.json` 里
 
-**不要「顺手」把它们改统一**，那会破坏兼容性。详见 `HANDOVER.md`。
+**不要「顺手」把它们改统一**，那会破坏兼容性。详见 `docs/HANDOVER.md`。
 
 ---
 

@@ -21,7 +21,10 @@ import sys
 import urllib.error
 import urllib.request
 
+# 这个脚本在 scripts/ 下，但 index.js 和 prosody.py 都在上一级（插件根目录）。
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 PASS = "[ OK ]"
@@ -52,7 +55,7 @@ print("\n[1] 代码层面（不依赖运行中的 DSH）")
 
 def check_env_fix():
     """直接读源码，确认 runProcess 里有 env。"""
-    p = os.path.join(HERE, "index.js")
+    p = os.path.join(ROOT, "index.js")
     t = open(p, encoding="utf-8").read()
     i = t.find("function runProcess(")
     if i < 0:
@@ -66,7 +69,7 @@ def check_env_fix():
 
 
 def check_python_env_utf8():
-    p = os.path.join(HERE, "index.js")
+    p = os.path.join(ROOT, "index.js")
     t = open(p, encoding="utf-8").read()
     if "PYTHONIOENCODING: 'utf-8'" in t or "PYTHONIOENCODING: \"utf-8\"" in t:
         return True, "pythonEnv 有 PYTHONIOENCODING"

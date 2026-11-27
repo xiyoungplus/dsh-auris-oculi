@@ -241,7 +241,7 @@ DSH → **Plugins → Add plugin** → 选这个目录。
 依赖分三档：
 必装（librosa 那一套）、按功能（转写 / 声纹）、可选（更强模型）。
 
-完整的依赖清单和已知陷阱在 `INSTALL.md`。两个最容易卡住的：
+完整的依赖清单和已知陷阱在 [安装指南](INSTALL.md)。两个最容易卡住的：
 
 - `webrtcvad` 在 Python 3.12 上编译失败，必须用 `webrtcvad-wheels`
 - `resemblyzer` 首次运行会下载 200 MB 的 encoder，看起来像卡住

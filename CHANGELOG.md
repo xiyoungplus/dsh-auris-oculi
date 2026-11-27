@@ -5,6 +5,39 @@
 
 ---
 
+## 0.20.4
+
+**文档拆分与目录整理。功能无变化。**
+
+README 涨到 964 行，新来的想知道「这是什么」要先滑过 200 行依赖说明。
+拆成按需阅读的结构：
+
+| 原来（都在 README） | 现在 |
+|---|---|
+| 依赖 194 行 | docs/INSTALL.md |
+| 页面 222 行 | docs/UI.md |
+| 会话工具 291 行 | docs/TOOLS.md |
+| 配置 73 行 | docs/CONFIG.md |
+
+README 从 964 行降到 182 行，只留概览和导航。
+
+**目录整理**：
+
+- INSTALL.md / HANDOVER.md 移进 docs/
+- emotion-data-findings.md 改名 emotion-findings.md
+- 测试/辅助脚本移进 scripts/
+- 删掉 dist/（0.10.1 的旧包）和 __pycache__/
+
+**移动文件踩的坑**：两个脚本移到 scripts/ 后 import 全挂了——
+它们原来靠 HERE = dirname(__file__) 找 prosody.py 和 	estdata/，
+移动后这两个都在上一级。修法是加 ROOT = dirname(HERE) 到 sys.path。
+
+**教训**：移动文件后必须重跑测试。
+egression_content_class.py 和
+check_after_restart.py 都是这么发现的（移动前正常，移动后 5/6 项失效）。
+
+---
+
 ## 0.20.3
 
 **改名为 `dsh-auris-oculi`，补开源相关文件和许可证。**
@@ -14,7 +47,7 @@ auris（耳）+ oculi（眼）—— 给 agent 装上耳朵和眼睛。
 
 **已改**：npm 包名、DSH 插件 id、界面显示名、文档标题。
 
-**故意没改**（兼容性，详见 `HANDOVER.md` 的「改名的兼容性决定」）：
+**故意没改**（兼容性，详见 `docs/HANDOVER.md` 的「改名的兼容性决定」）：
 
 - 数据目录 `~/.dsh/xiyoungtools/`（里面有 1212 条不可再生标注）
 - 路由前缀 `/xiyoungtools/*`（前端 48 处引用）
@@ -28,7 +61,7 @@ auris（耳）+ oculi（眼）—— 给 agent 装上耳朵和眼睛。
 - `CONTRIBUTING.md`：怎么跑测试、哪些已知问题不用报、三条不能碰的硬编码规则
 - `.github/ISSUE_TEMPLATE/`：bug 报告 + 「数字不对」专用模板
 - `.gitignore` / `.npmignore`
-- `check_after_restart.py`：重启后自检（编码修复是否生效、后端是否可用）
+- `scripts/check_after_restart.py`：重启后自检（编码修复是否生效、后端是否可用）
 
 ---
 
@@ -170,7 +203,7 @@ LPC 求根不稳定（同一人 F1 从 349 跳到 1736），实测失败，不�
 **实测**：CNEV 上 5 维韵律 66.5% → 合并 10 维 71.1%，多轮抽样 +3.3 个百分点。
 幅度不大但真实。
 
-完整数据见 `docs/emotion-data-findings.md`。
+完整数据见 `docs/docs/emotion-findings.md`。
 
 ---
 

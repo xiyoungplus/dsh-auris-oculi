@@ -33,7 +33,11 @@ import shutil
 import sys
 import tempfile
 
+# 这个脚本在 scripts/ 下，但 prosody.py 和 testdata/ 都在上一级（插件根目录）。
+# 所以要把根目录也加进 sys.path，否则 import prosody 会失败。
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 import numpy as np
@@ -184,9 +188,9 @@ def run_noise(root):
 def main():
     ap = argparse.ArgumentParser(description="语音内容分类回归测试")
     ap.add_argument("--nonverbal", default=os.path.join(
-        HERE, "testdata", "nonverbal"), help="非言语人声解包目录")
+        ROOT, "testdata", "nonverbal"), help="非言语人声解包目录")
     ap.add_argument("--noise", default=os.path.join(
-        HERE, "testdata", "noise"), help="THCHS resource 的 noise 目录")
+        ROOT, "testdata", "noise"), help="THCHS resource 的 noise 目录")
     args = ap.parse_args()
 
     ok = True
