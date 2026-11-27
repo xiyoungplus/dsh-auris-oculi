@@ -82,6 +82,7 @@ node scripts/test-host.mjs                      # 64 条断言：路由/配置/�
 node scripts/smoke.mjs                          # client.js 真渲染
 node scripts/audit-config.mjs                   # 41 个配置项都有通路
 python scripts/regression_content_class.py      # nonverbal 分类（需要 testdata/）
+python scripts/test_oscillation.py              # 音高振荡 / 滑移（六条合成音频，自包含）
 ```
 
 `regression_content_class.py` 依赖 `testdata/`（44 MB 测试音频），
