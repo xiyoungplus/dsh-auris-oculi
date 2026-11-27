@@ -10,7 +10,7 @@
  */
 
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir as osHomedir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import vm from 'node:vm'
@@ -22,9 +22,15 @@ let failures = 0
 const check = (name, fn) => {
   try {
     const result = fn()
+    // 约定：返回 true = 通过；返回 false 或**任何字符串** = 失败（字符串是失败原因）。
+    //
+    // 之前这里把字符串当成「通过 + 附注」，于是 `return cond ? true : '原因'`
+    // 这种写法在失败时会打勾并附上原因 —— 看起来像通过，其实全红。
+    // 实测它掩盖了「spawn 没传 env」这条断言好几个月。
     if (result === true) { console.log('  ✓ ' + name); return }
     if (result === false) { failures += 1; console.log('  ✗ ' + name); return }
-    console.log('  ✓ ' + name + (result ? ' → ' + result : ''))
+    failures += 1
+    console.log('  ✗ ' + name + ' → ' + String(result))
   } catch (error) {
     failures += 1
     console.log('  ✗ ' + name + ' → ' + error.message)
@@ -219,7 +225,26 @@ async function call(method, routePath, { query, body } = {}) {
 // ---------------------------------------------------------------------------
 
 console.log('\n=== 路由注册 ===')
-check('41 条路由全部注册', () => routes.size === 41 || '实际 ' + routes.size)
+check('路由全部注册（前缀统一）', () => {
+  // 不写死数量：加一条路由就要改断言，改忘了永远红，顺手改了又验证不到什么。
+  // 改成三条有意义的检查。
+  if (routes.size < 30) return `只注册了 ${routes.size} 条，明显不对`
+  const bad = [...routes.keys()].filter((p) => !p.startsWith('/xiyoungtools/'))
+  if (bad.length) return `${bad.length} 条前缀不对：${bad.slice(0, 3).join(', ')}`
+  return true
+})
+check('路由数量与源码声明一致', () => {
+  // 源码里 register('/xiyoungtools/xxx' 的条数 == 运行时注册的条数
+  // 不一致说明某个 register 被异常跳过了（或注册后又删了）
+  const src = readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  const declared = new Set()
+  const re = /register\('(\/xiyoungtools\/[^']+)'/g
+  let m
+  while ((m = re.exec(src)) !== null) declared.add(m[1])
+  return declared.size === routes.size
+    ? true
+    : `源码声明 ${declared.size} 条，运行时注册 ${routes.size} 条`
+})
 
 console.log('\n=== health：模型名不能再是 null ===')
 {
@@ -382,11 +407,19 @@ console.log('\n=== 中文编码：python 子进程必须拿到 PYTHONIOENCODING 
   const idx = src.indexOf('function runProcess(')
   check('找得到 runProcess', () => (idx > 0 ? true : '没找到'))
   if (idx > 0) {
-    // 取函数体前 600 字符，够覆盖 spawn 调用
-    const body = src.slice(idx, idx + 600)
-    check('runProcess 的 spawn 传了 env', () => (
-      /spawn\([^)]*env\s*:/.test(body) ? true
-        : 'spawn 没传 env —— python 会按 GBK 输出，中文会乱码'))
+    // 取函数体前 1500 字符。原来只取 600 —— 但 runProcess 开头有 12 行
+    // 解释「为什么必须传 env」的注释，spawn( 恰好落在 572，env: 被截在外面，
+    // 于是这个断言无论代码对不对都会失败。
+    const body = src.slice(idx, idx + 1500)
+    check('runProcess 的 spawn 传了 env', () => {
+      // spawn(command, args, { windowsHide, cwd, env }) —— env 在第三个参数里。
+      // 从 spawn( 往后截一段，确认 options 对象里有 env:
+      const from = body.indexOf('spawn(')
+      if (from < 0) return '找不到 spawn 调用'
+      const seg = body.slice(from, from + 400)
+      return /env\s*:/.test(seg) ? true
+        : 'spawn 的 options 里没传 env —— python 会按 GBK 输出，中文会乱码'
+    })
     check('env 默认回落到 pythonEnv()', () => (
       body.includes('pythonEnv()') ? true : '没有 pythonEnv() 回落'))
   }
@@ -403,6 +436,88 @@ console.log('\n=== 中文编码：python 子进程必须拿到 PYTHONIOENCODING 
       ? true
       : `${withEnv.length}/${spawns.length} 带 env，可能有路径漏了`))
 }
+
+// ---------------------------------------------------------------------------
+// 身份一致性（2026-11-27 事故后的永久回归）
+//
+// 事故：package.json 的 name 改成 dsh-auris-oculi 后，profile 的 bundles 和
+// client.js 的模块 id 还是 xiyoungtools，front 挂不上、左侧栏入口消失。
+//
+// 这类 bug 的共同点：某个字段**隐含要求等于包名**，但没有任何检查。
+// grep 搜旧字符串也搜不到——要检查的是「等于包名」而非「等于某个值」。
+// ---------------------------------------------------------------------------
+
+const pkgJson = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+const PKG_NAME = String(pkgJson.name || '')
+check('package.json name 非空', () => PKG_NAME.length > 0 ? true : 'name 为空')
+
+// cordis.patch.yml 的 id 和 name 都必须等于包名
+check('patch id 等于包名', () => {
+  const yml = readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8')
+  const m = yml.match(/^\s*-?\s*id:\s*['"]?([^'"\n]+)['"]?/m)
+  const got = m ? m[1].trim() : null
+  return got === PKG_NAME ? true : `patch id = ${got}, 包名 = ${PKG_NAME}`
+})
+check('patch name 等于包名', () => {
+  const yml = readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8')
+  const m = yml.match(/^\s*name:\s*['"]([^'"]+)['"]/m)
+  const got = m ? m[1].trim() : null
+  return got === PKG_NAME ? true : `patch name = ${got}, 包名 = ${PKG_NAME}`
+})
+
+// client.js 的模块 id 必须等于包名（DSH 文档硬性要求）
+check('client.js 模块 id 等于包名', () => {
+  const cj = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  const m = cj.match(/__ModuleLoader__\.load\(\{\s*\n\s*id:\s*'([^']+)'/)
+  const got = m ? m[1] : null
+  return got === PKG_NAME ? true : `id = ${got}, 包名 = ${PKG_NAME}`
+})
+check('client.js PANEL_ID 等于包名', () => {
+  const cj = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  const m = cj.match(/const PANEL_ID = '([^']+)'/)
+  const got = m ? m[1] : null
+  return got === PKG_NAME ? true : `PANEL_ID = ${got}`
+})
+
+// client.js 必须注册这两个 slot，否则左侧栏没有入口
+check('client.js 注册 sidebar.panellist', () => {
+  const cj = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  return cj.includes("'sidebar.panellist'") ? true : '缺 sidebar.panellist'
+})
+check('client.js 注册 main', () => {
+  const cj = readFileSync(path.join(ROOT, 'client.js'), 'utf8')
+  return cj.includes("'main'") ? true : '缺 main'
+})
+
+// package.json 的 exports 与 dsh 字段
+check('exports["."] 指向 index.js', () =>
+  (pkgJson.exports || {})['.'] === './index.js' ? true : 'exports["."] 不对')
+check('exports 有 ./client', () => {
+  const rel = (pkgJson.exports || {})['./client']
+  if (!rel) return '缺 ./client'
+  const p = path.join(ROOT, String(rel).replace(/^\.\//, ''))
+  return existsSync(p) ? true : `exports 指向的 ${rel} 不存在`
+})
+check('dsh.client.platform 是 web', () =>
+  ((pkgJson.dsh || {}).client || {}).platform === 'web' ? true : 'platform 不是 web')
+check('dsh.bundle.patch 指向 cordis.patch.yml', () =>
+  ((pkgJson.dsh || {}).bundle || {}).patch === './cordis.patch.yml'
+    ? true : 'patch 路径不对')
+
+// profile 里不能残留旧包名（本机有 profile 时才检查）
+check('profile 引用了一致的包名', () => {
+  const profPath = path.join(osHomedir(), '.dsh', 'profiles', 'desktop', 'package.json')
+  if (!existsSync(profPath)) return '跳过（本机无 profile）'
+  const pp = JSON.parse(readFileSync(profPath, 'utf8'))
+  const deps = pp.dependencies || {}
+  const bundles = ((pp.dsh || {}).profile || {}).bundles || []
+  const problems = []
+  if (!deps[PKG_NAME]) problems.push('dependencies 缺 ' + PKG_NAME)
+  if (!bundles.includes(PKG_NAME)) problems.push('bundles 缺 ' + PKG_NAME)
+  if (bundles.includes('xiyoungtools')) problems.push('bundles 有旧名 xiyoungtools')
+  if ('xiyoungtools' in deps) problems.push('dependencies 有旧名 xiyoungtools')
+  return problems.length === 0 ? true : problems.join('; ')
+})
 
 // 收拾临时目录
 try { rmSync(SANDBOX, { recursive: true, force: true }) } catch { /* 忽略 */ }

@@ -15,6 +15,13 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import vm from 'node:vm'
 
+// 包名从 package.json 读，不写死。
+// 改名时如果这里写死了旧名，断言会失败，容易被人当成「测试过期」随手改掉数字，
+// 反而掩盖「client.js 的 id 没跟着改」这种真问题。
+const PKG_NAME = JSON.parse(
+  readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')
+).name
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const CLIENT = path.join(ROOT, 'client.js')
@@ -127,7 +134,7 @@ const source = readFileSync(CLIENT, 'utf8')
 let factory = null
 const loader = {
   load({ id, factory: f }) {
-    if (id !== 'xiyoungtools') throw new Error('意外的插件 id: ' + id)
+    if (id !== PKG_NAME) throw new Error('意外的插件 id: ' + id + '（应为 ' + PKG_NAME + '）')
     factory = f
   },
 }
@@ -181,8 +188,8 @@ try {
 }
 
 console.log('\n=== client.js 模块 ===')
-if (plugin && plugin.name === 'xiyoungtools') ok('模块导出 name = xiyoungtools')
-else fail('模块导出 name 不是 xiyoungtools')
+if (plugin && plugin.name === PKG_NAME) ok('模块导出 name = ' + PKG_NAME)
+else fail('模块导出 name 不是 ' + PKG_NAME + '（实际 ' + (plugin && plugin.name) + '）')
 
 if (!plugin || typeof plugin.apply !== 'function') {
   fail('模块没有 apply(ctx)')

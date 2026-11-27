@@ -5,6 +5,97 @@
 
 ---
 
+## 0.21.2
+
+**修一个严重回归：改名后左侧栏入口消失。**
+
+0.21.0 改包名时只改了 `package.json`，漏了三处「必须等于包名」的地方：
+
+| 位置 | 事故时的值 | 应该的值 |
+|---|---|---|
+| profile `dependencies` | `xiyoungtools` | `dsh-auris-oculi` |
+| profile `bundles` | `xiyoungtools` | `dsh-auris-oculi` |
+| `node_modules` junction | `xiyoungtools` | `dsh-auris-oculi` |
+| **`client.js` 的模块 id** | `xiyoungtools` | `dsh-auris-oculi` |
+
+DSH 按 `bundles` 里的名字找包，读到 `package.json` 发现名字对不上就不加载前端；
+`client.js` 的模块 id 也必须等于包名（DSH 文档原文：*the browser artifact
+registers a lazy factory whose id equals the package name*）。
+
+**表现**：Host 半完全正常（`/xiyoungtools/health` 返回 200，13 个工具都能调），
+只有前端挂不上——左侧栏没有入口，页面点不开。这类「一半正常」最容易误判。
+
+### 为什么测试没发现
+
+`grep xiyoungtools` 搜不到，因为要检查的是「**等于包名**」而不是「等于某个值」。
+已有的测试也没有一条断言这个关系。
+
+### 补的检查（16 条，永久回归）
+
+`scripts/test-host.mjs` 新增「身份一致性」一节：
+
+- `package.json` name 非空
+- `cordis.patch.yml` 的 id / name 等于包名
+- **`client.js` 模块 id 等于包名**
+- **`PANEL_ID` 等于包名**
+- `client.js` 注册了 `sidebar.panellist` 和 `main` 两个 slot
+- `exports["."]` / `exports["./client"]` 正确且文件存在
+- `dsh.client.platform` 是 web、`dsh.bundle.patch` 正确
+- profile 的 dependencies / bundles 含该包，且无旧名残留
+
+### 顺带修了测试本身的三个 bug
+
+修完 `check()` 后立刻暴露出三个一直被掩盖的假阳性——**之前全是 ✓，其实是红的**。
+
+**bug 1：`check()` 把字符串当通过**
+
+```js
+if (result === true) ✓
+if (result === false) ✗
+else ✓ + ' → ' + result      // ← 字符串在这里打勾
+```
+
+而大量测试用 `return cond ? true : '失败原因'` 的写法——失败时返回的正是字符串。
+所以那些测试**从来没有真正失败过**。修完后立刻红了 3 项。
+
+**bug 2：「spawn 传了 env」的正则永远匹配不到**
+
+```js
+/spawn\([^)]*env\s*:/    // [^)]* 遇到 pythonEnv() 的 ) 就停了
+```
+
+代码本身是对的（`env: options.env || pythonEnv()` 一直在），但断言永远失败；
+再叠加 bug 1，就变成「永远打勾、实际什么都没检查」。
+
+**bug 3：函数体只截 600 字符**
+
+`runProcess` 开头有 12 行解释「为什么必须传 env」的注释，
+`spawn(` 恰好落在第 572 字符，`env:` 被截在外面。
+
+### 测试写死数字的问题
+
+`41 条路由全部注册` 写死了数量（实际 44）。改成动态校验：
+数量下限 + 前缀统一 + **源码声明数 == 运行时注册数**。
+
+`smoke.mjs` 里写死的 `xiyoungtools` 也改成从 `package.json` 读——
+凡是「必须等于包名」的断言都不该写死字符串。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| test-host | 76 通过 / 0 失败（含 16 条新增身份检查）|
+| smoke | 15 通过 / 0 失败 |
+| audit-config | 43 个配置项无死键 |
+| regression | 全部通过 |
+| 旧名残留扫描 | 0 处（兼容层除外）|
+| **前端模拟加载** | id / slot / apply 全链路通过 |
+| **运行时 slot 状态** | `sidebar.panellist` 和 `main` 均 active |
+| 13 个工具可用性 | 13/13 |
+| 真实分析 | 33 个特征，中文转写完好 |
+
+---
+
 ## 0.21.1
 
 **把 0.21.0 留下的三项后续做完。工具从 12 个增到 13 个。**

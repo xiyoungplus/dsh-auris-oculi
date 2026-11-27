@@ -8,13 +8,15 @@
 // does not lose the running task.
 
 window.__ModuleLoader__.load({
-  id: 'xiyoungtools',
+  id: 'dsh-auris-oculi',
   factory: (require) => {
     const React = require('react')
     const h = React.createElement
     const { useState, useEffect, useRef } = React
 
-    const PANEL_ID = 'xiyoungtools'
+    const PANEL_ID = 'dsh-auris-oculi'
+    // localStorage 的键**故意保留旧前缀**：用户已经存了 URL、模型名、
+    // clip 参数，改键名等于把他们的配置清空。这些键不出现在任何对外接口里。
     const URL_KEY = 'xiyoungtools:url'
     const MODEL_KEY = 'xiyoungtools:model'
 
