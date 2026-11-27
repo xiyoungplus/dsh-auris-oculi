@@ -5799,6 +5799,9 @@ async function collectHealth() {
     benchRoot: BENCH_ROOT,
     benchScript: BENCH_SCRIPT,
     benchScriptExists: existsSync(BENCH_SCRIPT),
+    // Python 包状态（2026-11-27）：前端据此显示「缺哪些包」并给安装按钮。
+    // probePythonDeps 已经缓存 60 秒，不会每次都起 python。
+    pythonDeps: probePythonDeps(),
     speakerModelAvailable: probeResemblyzer(),
     model: currentModel,
     ollama: OLLAMA(),

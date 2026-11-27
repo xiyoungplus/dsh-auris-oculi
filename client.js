@@ -72,6 +72,15 @@ window.__ModuleLoader__.load({
         fontSize: 12.5,
         cursor: 'pointer'
       },
+        cardTitle: {
+          fontSize: 14,
+          fontWeight: 600,
+          color: C.text,
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 6,
+          marginBottom: 2
+        },
       card: {
         background: C.card,
         border: '1px solid ' + C.border,
@@ -2114,6 +2123,194 @@ window.__ModuleLoader__.load({
     //   - 布尔：勾选框
     //   - 只有地址、路径这类才用输入框
     // ---------------------------------------------------------------------
+    /**
+     * 环境检查卡片（2026-11-27）。
+     *
+     * 为什么要这个：依赖多（Python 包 + ffmpeg + yt-dlp + Ollama），
+     * 以前只显示一行 "ffmpeg: 缺失"，用户不知道下一步做什么。
+     *
+     * 三种状态分清楚：
+     *   auto   —— 点按钮就能装
+     *   manual —— 必须人来（要包管理器或管理员权限）
+     *   ok     —— 已就绪
+     */
+    function EnvCard({ health, onRecheck }) {
+      const [busy, setBusy] = useState('')
+      const [log, setLog] = useState([])
+      const [err, setErr] = useState('')
+
+      const items = []
+      if (health) {
+        items.push({
+          key: 'ffmpeg', name: 'ffmpeg',
+          ok: Boolean(health.ffmpegExists),
+          affects: '视频、音频、截取，几乎所有音视频功能',
+          mode: 'manual',
+          how: '对 DSH 说一句「帮我装 ffmpeg」，它会用系统包管理器装。'
+        })
+        const py = (health && health.pythonDeps) || {}
+        const pyMissing = ['librosa', 'scipy', 'soundfile', 'numpy']
+          .filter((m) => py[m] && py[m].ok === false)
+        items.push({
+          key: 'python', name: '音频分析组件',
+          ok: pyMissing.length === 0,
+          affects: '韵律分析、批量导入',
+          mode: 'auto',
+          packages: ['librosa', 'soundfile', 'scipy', 'numpy'],
+          how: '点按钮安装，约 400 MB，1-2 分钟。',
+          detail: pyMissing.length ? '缺：' + pyMissing.join(', ') : ''
+        })
+        items.push({
+          key: 'ytdlp', name: 'yt-dlp',
+          ok: Boolean(health.ytdlpExists),
+          affects: '下载 B 站视频（本地文件不受影响）',
+          mode: 'auto',
+          packages: ['yt-dlp'],
+          how: '点按钮安装，约 15 MB。'
+        })
+        items.push({
+          key: 'ollama', name: 'Ollama',
+          ok: Boolean(health.ollamaOK),
+          affects: '视频逐帧观看',
+          mode: 'manual',
+          how: '对 DSH 说「帮我装 Ollama」，装完重启一次 DSH。'
+        })
+        items.push({
+          key: 'vision', name: '视觉模型',
+          ok: Boolean(health.models && health.models.length),
+          affects: '视频逐帧观看',
+          mode: 'manual',
+          how: '对 DSH 说「帮我拉 qwen3.5:4b 模型」，约 3 GB。'
+        })
+      }
+
+      const missing = items.filter((it) => !it.ok)
+
+      async function doInstall(item) {
+        if (busy) return
+        setBusy(item.key)
+        setErr('')
+        setLog(['正在安装 ' + item.name + '…'])
+        try {
+          const res = await api('/xiyoungtools/install-deps', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ packages: item.packages })
+          })
+          // 严格判 true。后端可能返回 {ok:false} 或字符串，
+          // 宽松判断会把失败当成功——这个坑在测试脚本里踩过。
+          if (res && res.ok === true) {
+            setLog(['装好了：' + item.name])
+            if (onRecheck) await onRecheck()
+          } else {
+            setErr((res && res.message) || '安装失败，原因不明')
+            setLog([])
+          }
+        } catch (e) {
+          setErr(String(e && e.message ? e.message : e))
+          setLog([])
+        } finally {
+          setBusy('')
+        }
+      }
+
+      if (!health) {
+        return h('div', { style: S.card },
+          h('div', { style: S.cardTitle }, '环境检查'),
+          h('div', { style: { fontSize: 12.5, color: C.muted, marginTop: 8 } },
+            '还没读到环境状态。'),
+          h('button', {
+            style: Object.assign({}, S.button, { marginTop: 10 }),
+            onClick: onRecheck
+          }, '重新检查')
+        )
+      }
+
+      return h('div', { style: S.card },
+        h('div', { style: S.cardTitle },
+          '环境检查',
+          h('span', {
+            style: { marginLeft: 8, fontSize: 12, color: missing.length ? C.accent : C.muted }
+          }, missing.length ? (missing.length + ' 项待处理') : '全部就绪')
+        ),
+        h('div', { style: { fontSize: 12, color: C.faint, marginTop: 6, lineHeight: 1.7 } },
+          '缺了不影响插件本身，只影响对应功能。'),
+
+        h('div', { style: { marginTop: 12 } },
+          items.map((it) => h('div', {
+            key: it.key,
+            style: {
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              padding: '10px 0', borderTop: '1px solid ' + C.border
+            }
+          },
+            h('div', {
+              style: {
+                flex: '0 0 auto', width: 7, height: 7, borderRadius: 4, marginTop: 6,
+                background: it.ok ? '#3fb950' : (it.mode === 'auto' ? C.accent : '#d29922')
+              }
+            }),
+            h('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+              h('div', { style: { fontSize: 13, fontWeight: 550 } },
+                it.name,
+                h('span', {
+                  style: {
+                    marginLeft: 8, fontSize: 11.5, fontWeight: 400,
+                    color: it.ok ? C.faint : C.accent
+                  }
+                }, it.ok ? '已就绪' : (it.mode === 'auto' ? '可自动安装' : '需要手动'))
+              ),
+              h('div', { style: { fontSize: 11.5, color: C.muted, marginTop: 3 } },
+                it.ok ? ('用于 ' + it.affects) : ('缺它：' + it.affects)),
+              !it.ok && it.detail ? h('div', {
+                style: { fontSize: 11, color: C.faint, marginTop: 2, fontFamily: C.mono }
+              }, it.detail) : null,
+              !it.ok ? h('div', {
+                style: { fontSize: 11.5, color: C.faint, marginTop: 4 }
+              }, it.how) : null
+            ),
+            !it.ok && it.mode === 'auto' ? h('button', {
+              style: Object.assign({}, S.button, {
+                flex: '0 0 auto',
+                opacity: busy && busy !== it.key ? 0.4 : 1,
+                cursor: busy ? 'not-allowed' : 'pointer'
+              }),
+              disabled: Boolean(busy),
+              onClick: () => doInstall(it)
+            }, busy === it.key ? '安装中…' : '帮我装') : null
+          ))
+        ),
+
+        log.length ? h('div', {
+          style: {
+            marginTop: 10, padding: '8px 10px', borderRadius: 8,
+            background: C.layer1, fontSize: 11.5, color: C.muted,
+            fontFamily: C.mono, lineHeight: 1.7
+          }
+        }, log.map((l, i) => h('div', { key: i }, l))) : null,
+
+        err ? h('div', {
+          style: { marginTop: 10, fontSize: 12, color: '#f85149', lineHeight: 1.7 }
+        },
+          err,
+          h('div', { style: { marginTop: 6 } },
+            h('button', {
+              style: S.button,
+              onClick: () => { setErr(''); if (onRecheck) onRecheck() }
+            }, '重新检查')
+          )
+        ) : null,
+
+        h('div', { style: { marginTop: 14 } },
+          h('button', {
+            style: S.button,
+            disabled: Boolean(busy),
+            onClick: onRecheck
+          }, '重新检查')
+        )
+      )
+    }
+
     function ConfigCard({ health, onChanged }) {
       const [data, setData] = useState(null)
       const [models, setModels] = useState(null)
@@ -2693,17 +2890,25 @@ window.__ModuleLoader__.load({
 
       // 环境自检：之前这个页面从不请求 /health，导致 health 恒为 null，
       // 于是底部环境状态条、显存并发建议、模型下拉全都拿不到数据。
+      //
+      // 2026-11-27：抽成 reloadHealth，因为环境检查卡片装完依赖后要能主动重查。
       const alive = useRef(true)
+      const reloadHealth = async () => {
+        try {
+          const h = await api('/xiyoungtools/health')
+          if (alive.current) {
+            setHealth(h)
+            setHealthError('')
+          }
+          return h
+        } catch (err) {
+          if (alive.current) setHealthError(String(err && err.message ? err.message : err))
+          return null
+        }
+      }
       useEffect(() => {
         alive.current = true
-        ;(async () => {
-          try {
-            const h = await api('/xiyoungtools/health')
-            if (alive.current) setHealth(h)
-          } catch (err) {
-            if (alive.current) setHealthError(String(err && err.message ? err.message : err))
-          }
-        })()
+        reloadHealth()
         refreshCache()
         return () => { alive.current = false }
       }, [])
@@ -2757,7 +2962,11 @@ window.__ModuleLoader__.load({
 
           tab === 'analyze' ? h(AnalyzeCard, { health: health }) : null,
 
-          tab === 'config' ? h(ConfigCard, { health: health }) : null,
+          tab === 'config' ? h('div', {},
+            // 环境检查放在配置页最上面：缺什么一眼看到，能装的直接点
+            h(EnvCard, { health: health, onRecheck: reloadHealth }),
+            h(ConfigCard, { health: health })
+          ) : null,
           tab === 'audio' ? h('div', {},
             // 音频页之前一次挂 5 个卡片，得一直往下滚。
             // 拆成子标签：一次只看一件事。

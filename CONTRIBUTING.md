@@ -83,6 +83,8 @@ node scripts/smoke.mjs                          # client.js 真渲染
 node scripts/audit-config.mjs                   # 41 个配置项都有通路
 python scripts/regression_content_class.py      # nonverbal 分类（需要 testdata/）
 python scripts/test_oscillation.py              # 音高振荡 / 滑移（六条合成音频，自包含）
+node scripts/test-envcard.mjs                   # 安装卡片：状态分支、严格判 true、后端契约
+node scripts/mutate-envcard.mjs                 # 变异测试：故意改坏 7 处，确认会红
 ```
 
 `regression_content_class.py` 依赖 `testdata/`（44 MB 测试音频），
