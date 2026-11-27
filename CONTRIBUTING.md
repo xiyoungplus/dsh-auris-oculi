@@ -123,6 +123,10 @@ python -c "import ast,glob; [ast.parse(open(f,encoding='utf-8').read()) for f in
 
 ## 代码约定
 
+> 动手前先看 [踩坑清单](docs/PITFALLS.md)——那里有真实发生过的坑，
+> 尤其「静默失败」和「测试本身的坑」两节：前者不报错只是悄悄变差，
+> 后者会让测试假装通过。
+
 ### 注释写「为什么」，不写「是什么」
 
 ```js
