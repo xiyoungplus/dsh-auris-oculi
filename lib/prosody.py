@@ -3470,7 +3470,8 @@ def write_markdown(path, summary, curves, meta):
                 L.append("- %s %s —— %s" % (_p["name"], _v, _p["how"]))
         L.append("")
         L.append("依据：" + "；".join(
-            "%s（%s）" % (_p["name"], _p["why"]) for _p in _hl[:3]))
+    # 每一条都要给依据（2026-11-28）：之前只给前三个，使用者指出「基频那条没有区间，它就是一句判决」。
+            "%s（%s）" % (_p["name"], _p["why"]) for _p in _hl))
         L.append("")
 
     L.append("## 汇总")

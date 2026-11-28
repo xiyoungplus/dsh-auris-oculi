@@ -368,6 +368,73 @@ check("每个亮点带依据", t_highlights_has_reason)
 
 # ══════════════════════════════════════════════════════
 print()
+print("=== 使用后反馈的三个问题（2026-11-28）===")
+
+
+def t_all_highlights_have_reason():
+    """每一条亮点都要有依据，不能只给前三个。
+
+    使用者反馈：四条里三条带参照，基频那条没有。
+    「没有区间，它就是一句判决。」
+    """
+    src = io.open(os.path.join(ROOT, "lib", "prosody.py"), encoding="utf-8").read()
+    # 找「依据：」那行，看是不是 _hl[:3]
+    for line in src.split("\n"):
+        if "依据" in line and "join" in line:
+            if "_hl[:3]" in src:
+                return "依据只给前三个（应该给全部）"
+            if "for _p in _hl)" not in src and "_hl[:3]" in src:
+                return "依据截断了"
+            return True
+    return "找不到依据生成逻辑"
+
+
+def t_entries_in_schema():
+    """entries 必须在 video_summary 的 schema 里声明。
+
+    使用者反馈：回执只印一格画面。排查发现 render 没用 entries，
+    而且 schema 也没声明——可能被过滤。
+    """
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+    # 找 video_summary 的 schema 段
+    i = idx.find("name: 'video_summary'")
+    if i < 0:
+        return "找不到 video_summary"
+    j = idx.find("async execute", i)
+    seg = idx[i:j]
+    if "entries: {" not in seg:
+        return "schema 里没有 entries 声明"
+    return True
+
+
+def t_entries_in_render():
+    """render 里必须真的印 entries。"""
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+    if "逐格内容" not in idx:
+        return "render 里没有逐格内容"
+    if "value.entries" not in idx:
+        return "render 没读 value.entries"
+    return True
+
+
+def t_transcript_no_truncate():
+    """转写不能截断到 200 字。
+
+    使用者反馈：转写印一句就断了。
+    """
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+    if "String(a.transcript).slice(0, 200)" in idx:
+        return "转写还是截断到 200 字"
+    return True
+
+
+check("每条亮点都有依据（不是只前三个）", t_all_highlights_have_reason)
+check("entries 在 schema 里声明", t_entries_in_schema)
+check("render 里真的印 entries", t_entries_in_render)
+check("转写不截断", t_transcript_no_truncate)
+
+# ══════════════════════════════════════════════════════
+print()
 print("=" * 74)
 if failures:
     print("%d 项失败：" % len(failures))

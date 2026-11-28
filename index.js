@@ -1676,7 +1676,9 @@ const analyzeTool = {
         lines.push('【声音】')
         if (a.duration) lines.push('  时长 ' + Number(a.duration).toFixed(1) + ' 秒')
         if (a.transcript) {
-    lines.push('  文本：' + String(a.transcript).slice(0, 200))
+    // 2026-11-28：不再截断到 200 字。
+    // 使用者反馈「转写印一句就断了」——截断会让人误以为只说了这些。
+    lines.push('  文本：' + String(a.transcript))
     lines.push('  （自动识别，同音字可能错，引用前请核对音频）')
   }
         if (a.contentClass && a.contentClass.kind !== 'speech') {
@@ -2292,6 +2294,21 @@ const videoSummaryTool = {
         reportTruncated: { type: 'boolean' },
         outDir: { type: 'string' },
         reportPath: { type: 'string' },
+        // 2026-11-28：这些早就在返回里了，schema 没声明。
+        // 使用者反馈「回执只印一格画面」——排查发现 render 没用 entries，
+        // schema 缺声明也可能让数据被过滤，补齐。
+        entries: {
+          type: 'array',
+          description: '逐格内容（时间/场景/动作/画面文字），按时间排序。'
+            + '默认前 80 条；更多见 entriesPath。'
+        },
+        entriesTotal: { type: 'number' },
+        entriesOmitted: { type: 'number' },
+        entriesPath: { type: 'string' },
+        analysisPath: { type: 'string' },
+        maxSheetsCapped: { type: 'boolean' },
+        effectiveMaxSheets: { type: 'number' },
+        wantedMaxSheets: { oneOf: [{ type: 'number' }, { type: 'null' }] },
         error: { oneOf: [{ type: 'string' }, { type: 'null' }] },
         progress: { type: 'object' },
         note: { type: 'string' },
@@ -2327,6 +2344,27 @@ const videoSummaryTool = {
         lines.push('⚠ ' + value.summaryCaveat)
       }
       lines.push('')
+      // 逐格内容（2026-11-28）。
+      // 使用者：「回执只印了一格画面，盘上 48 格是齐的。
+      // 这意味着我不能只读回执，每次都得记得去翻盘。」
+      // 根因：entries 早就算好并返回了，但 render 里没用它。
+      if (Array.isArray(value.entries) && value.entries.length) {
+        lines.push('')
+        lines.push('逐格内容（' + value.entries.length + ' 条'
+          + (value.entriesOmitted ? '，另有 ' + value.entriesOmitted + ' 条见文件' : '')
+          + '）：')
+        for (const e of value.entries) {
+          const parts = []
+          if (e.scene) parts.push(e.scene)
+          if (e.action) parts.push(e.action)
+          if (e.text) parts.push('「' + e.text + '」')
+          lines.push('  ' + (e.time || '--:--') + '  ' + parts.join(' · '))
+        }
+        if (value.entriesPath) {
+          lines.push('  （完整清单：' + value.entriesPath + '）')
+        }
+      }
+
       lines.push('输出：' + value.outDir)
       return [{ type: 'text', text: lines.join('\n') }]
     }
