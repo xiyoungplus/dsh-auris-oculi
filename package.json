@@ -8,8 +8,10 @@
     "check": "node --check index.js && node --check client.js",
     "smoke": "node scripts/smoke.mjs",
     "audit": "node scripts/audit-config.mjs",
-    "regress": "python regression_content_class.py",
-    "test": "node scripts/smoke.mjs && node scripts/test-host.mjs && node scripts/audit-config.mjs"
+    "regress": "python scripts/regression_content_class.py",
+    "test": "node scripts/smoke.mjs && node scripts/test-host.mjs && node scripts/audit-config.mjs",
+    "clean:pycache": "node scripts/clean-pycache.mjs",
+    "prepublishOnly": "node scripts/clean-pycache.mjs"
   },
   "exports": {
     ".": "./index.js",
