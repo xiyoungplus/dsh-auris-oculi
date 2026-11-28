@@ -1,6 +1,6 @@
 {
   "name": "dsh-auris-oculi",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "description": "给 agent 装上耳朵和眼睛：视频逐帧观看、片段截取、韵律与频谱测量、声纹比对、说话人聚类/分离、变化点检测。全部本机运行，不联网。",
   "type": "module",
   "main": "index.js",

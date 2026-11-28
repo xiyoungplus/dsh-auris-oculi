@@ -212,6 +212,271 @@ def has_meaningful_text(t):
     return len(core) >= 2
 
 
+# 特征的可解释区间（2026-11-28）。
+#
+# 需求：「挑偏离本段中位最多的 3-4 个，不是挑绝对值最大的」。
+#
+# 为什么不能直接比绝对值：f0 是 180，db 是 -6，量纲完全不同，
+# 直接排大小没有意义。
+#
+# 所以给每个特征定义一个「正常范围」，算它偏离范围中点的程度。
+# 这个范围是根据语音学常识 + 本项目实测定的，**可能不准**。
+# 所以每条亮点都必须带「依据」，让人能反驳。
+#
+# 格式：(key, 中文名, 正常下限, 正常上限, 单位, 偏低, 偏高, 是否百分比, 小数位)
+HIGHLIGHT_FEATURES = [
+    ("f0Median", "基频", 80, 260, "Hz", "声音偏低", "声音偏高", False, 0),
+    ("semitoneRange", "音域", 6, 16, "半音", "语调平", "起伏大", False, 1),
+    ("silenceRatio", "停顿", 0.02, 0.30, "", "几乎不停", "停顿很多", True, 0),
+    ("unvoicedRatio", "气声", 0.05, 0.40, "", "基本都是浊音", "气声很多", True, 0),
+    ("pitchOscillationMedian", "音高振荡", 0.05, 0.40, "半音", "很稳", "振荡明显", False, 2),
+    ("dbRange", "音量起伏", 2, 12, "dB", "音量平稳", "音量起伏大", False, 1),
+    ("charsPerSec", "语速", 2.5, 5.5, "字/秒", "说话慢", "说话快", False, 1),
+]
+
+
+def _norm_deviation(value, lo, hi):
+    """算 value 偏离 [lo, hi] 中点的程度，归一到 0-1，方向带符号。"""
+    if value is None:
+        return None
+    mid = (lo + hi) / 2.0
+    half = max(1e-9, (hi - lo) / 2.0)
+    d = (value - mid) / half
+    return d
+
+
+def pick_highlights(summary, max_n=4):
+    """从 summary 里挑出最值得看的几个特征。
+
+    2026-11-28 加。使用者反馈「27 个数字一个没看，只看四五个，
+    但没人告诉我该看哪几个」。
+
+    挑法：偏离各自正常区间中点最多的（按归一化距离排序）。
+    不是挑绝对值最大的——那样 f0 永远排第一，因为它数字大。
+
+    返回 [{"key","name","value","unit","direction","how","why"}]。
+    """
+    scored = []
+    for (key, cn, lo, hi, unit, low_text, high_text,
+         is_pct, digits) in HIGHLIGHT_FEATURES:
+        v = summary.get(key)
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            continue
+        dev = _norm_deviation(v, lo, hi)
+        if dev is None:
+            continue
+        # 百分比特征显示成 47% 而不是 0.47
+        if is_pct:
+            shown = "%.0f%%" % (float(v) * 100)
+            lo_s = "%.0f%%" % (lo * 100)
+            hi_s = "%.0f%%" % (hi * 100)
+        else:
+            shown = "%.*f%s" % (digits, float(v), (" " + unit) if unit else "")
+            lo_s = "%g" % lo
+            hi_s = "%g" % hi
+        scored.append({
+            "key": key,
+            "name": cn,
+            "value": round(float(v), 3),
+            "shown": shown,
+            "unit": unit,
+            "deviation": round(abs(dev), 3),
+            "direction": "low" if dev < 0 else "high",
+            "how": low_text if dev < 0 else high_text,
+            # 依据：让人能反驳「为什么说这个值算偏」
+            "why": "正常范围 %s–%s，实际 %s" % (lo_s, hi_s, shown),
+        })
+    scored.sort(key=lambda x: -x["deviation"])
+    return scored[:max_n]
+
+
+def format_highlights(summary, max_n=4):
+    """把亮点格式成 2-3 行文字。
+
+    需求：「默认输出 2-3 行」「不放像什么」。
+    所以只给「哪个特征偏了、偏到哪、依据是什么」。
+    不说「这听起来像什么」——那是判断，留给读的人。
+    """
+    picks = pick_highlights(summary, max_n)
+    if not picks:
+        return []
+    lines = []
+    # 第一行：最显著的那个
+    for i, p in enumerate(picks):
+        val = p.get("shown") or str(p["value"])
+        if i == 0:
+            lines.append("最显著：%s %s（%s）" % (p["name"], val, p["how"]))
+        else:
+            lines.append("%s %s（%s）" % (p["name"], val, p["how"]))
+    # 最后一行给依据，让人能核对
+    if picks:
+        reasons = "；".join("%s：%s" % (p["name"], p["why"]) for p in picks[:3])
+        lines.append("依据：" + reasons)
+    return lines
+
+
+# 转写的免责说明（2026-11-28 加）。
+#
+# 为什么必须固定带：使用者反馈「我分不出哪句是听错的、哪句是真的，
+# 而且我写东西的时候会直接引用转写」。
+# 实测 SenseVoice 的 result 不给置信度（ys_log_probs 长度 0，greedy_search 不解码概率），
+# 所以退而求其次：明确告诉读的人「这是自动识别的，可能错」。
+TRANSCRIPT_CAVEAT = (
+    "转写为自动识别（SenseVoice），同音字、人名、专有名词可能错。"
+    "不要当作可直接引用的原文——引用前请核对原始音频。"
+)
+
+
+def rebuild_sentences(chunks, min_sec=0.8, max_sec=12.0, gap_sec=0.45):
+    """把「按时间块切出来的」转写，重建成「按句子边界」的。
+
+    2026-11-28 加。使用者反馈：
+        「prosody.md 的文本对照表，每行 8 秒。一句话被切在两行里；
+          一行里可能有两个人在说话；和别的东西对照时对不上是哪一句。」
+
+    问题不在转写（8 秒块是为了质量，实测 28 秒块只出 1.17 字/秒），
+    而在**把块边界直接当成了句子边界**。
+
+    chunks: [{"start":, "end":, "text":}, ...]
+            相邻块可能重叠（重叠区已去重，但时间会重叠）
+
+    做法：
+        1. 按标点切（。！？；）
+        2. 无标点时按长度强制切（超过 max_sec）
+        3. 太短的片段（< min_sec）和相邻合并
+
+    返回 [{"start":, "end":, "text":}]，时间是估算的（按字数比例分配），
+    因为块内没有逐字对齐。
+    """
+    if not chunks:
+        return []
+
+    # ---------------------------------------------------------------- 摊平
+    # 先把所有块拼成一个字符流，每个字记它的估算时间
+    pieces = []
+    for c in chunks:
+        txt = str(c.get("text") or "")
+        st = float(c.get("start") or 0)
+        en = float(c.get("end") or st)
+        if not txt:
+            continue
+        n = len(txt)
+        dur = max(0.01, en - st)
+        for i, ch in enumerate(txt):
+            # 按字数均匀分配时间（没有逐字对齐，这是估算）
+            pieces.append((st + dur * i / n, ch))
+
+    if not pieces:
+        return []
+
+    # ---------------------------------------------------------------- 切句
+    SENT_END = "。！？；!?;"
+    PAUSE = "，、,:："
+
+    sentences = []
+    buf = []
+    buf_start = None
+
+    def flush(end_t):
+        nonlocal buf, buf_start
+        if not buf:
+            return
+        text = "".join(ch for _, ch in buf).strip()
+        if text:
+            sentences.append({
+                "start": round(buf_start if buf_start is not None else buf[0][0], 2),
+                "end": round(end_t, 2),
+                "text": text,
+            })
+        buf = []
+        buf_start = None
+
+    prev_t = None
+    for tm, ch in pieces:
+        if buf_start is None:
+            buf_start = tm
+        buf.append((tm, ch))
+
+        # 句末标点 → 切
+        if ch in SENT_END:
+            flush(tm)
+            prev_t = tm
+            continue
+
+        # 停顿超过阈值 → 切（这是「换人说话」的常见信号）
+        if prev_t is not None and tm - prev_t > gap_sec:
+            flush(prev_t)
+            # 上一句已 flush，当前字重新开一句
+            buf = [(tm, ch)]
+            buf_start = tm
+
+        # 超长强制切（在逗号处优先）
+        elif buf and (tm - buf_start) > max_sec:
+            if ch in PAUSE:
+                flush(tm)
+                prev_t = tm
+                continue
+            # 找不到标点就在当前位置切
+            flush(tm)
+            prev_t = tm
+            continue
+
+        prev_t = tm
+
+    # 收尾
+    if buf:
+        flush(pieces[-1][0])
+
+    # 2026-11-28：句子级去重。
+    # 块间去重修好后可能还有残留（标点/语气词差异），这里兜一道。
+    # 做法：如果某句的开头在上一句里已经出现过，砍掉重复部分。
+    import re as _re3
+    _p3 = _re3.compile(r"[。！？，、；：\s]")
+    if len(sentences) >= 2:
+        deduped = [sentences[0]]
+        for s in sentences[1:]:
+            prev = deduped[-1]
+            pc = _p3.sub("", prev["text"])
+            sc = _p3.sub("", s["text"])
+            # 找最长公共后缀-前缀
+            cut = 0
+            for k in range(min(len(pc), len(sc), 15), 3, -1):
+                if pc.endswith(sc[:k]):
+                    cut = k
+                    break
+            if cut:
+                cnt = 0
+                real = 0
+                for oi, och in enumerate(s["text"]):
+                    if not _p3.match(och):
+                        if cnt == cut:
+                            real = oi
+                            break
+                        cnt += 1
+                    real = oi + 1
+                s["text"] = s["text"][real:]
+                s["start"] = prev["end"]
+                if not _p3.sub("", s["text"]):
+                    continue
+            deduped.append(s)
+        sentences = deduped
+
+    # ---------------------------------------------------------------- 合并太短的
+    merged = []
+    for s in sentences:
+        if merged:
+            last = merged[-1]
+            too_short = (s["end"] - s["start"]) < min_sec
+            last_short = (last["end"] - last["start"]) < min_sec
+            # 相邻两句都很短，或本句太短 → 合并
+            if too_short or last_short:
+                last["text"] += s["text"]
+                last["end"] = s["end"]
+                continue
+        merged.append(dict(s))
+    return merged
+
+
 def transcribe(wav_path, model, tokens, language="zh"):
     """用 SenseVoice 转写，返回 (全文, 分段列表, 状态)。
 
@@ -381,6 +646,16 @@ def transcribe(wav_path, model, tokens, language="zh"):
 
     text = "".join(texts)
     if len(starts) > 1:
+        # 2026-11-28：多块时，按句子边界重建 segments。
+        #
+        # 为什么：8 秒块是为了转写质量（实测 28 秒块只出 1.17 字/秒），
+        # 但块边界不是句子边界。实测 29 秒录音切成 4 块，全是 8.00 秒，
+        # 而且段间重叠 0.5 秒——一句话被切两行，段4 还和段3 内容重复。
+        #
+        # 使用者反馈：「我分不出哪句是谁说的」。
+        rebuilt = rebuild_sentences(segments)
+        if rebuilt:
+            return text, rebuilt, status
         return text, segments, status
 
     # 单块：沿用 token 级时间戳做更细的分段。
@@ -2739,6 +3014,43 @@ def _osc_spans(osc, times, rates, min_sec=0.25, gap_sec=0.15):
     return spans
 
 
+def mark_glide_overlap(spans, glides):
+    """给和滑移重叠的振荡时段加标记（2026-11-28）。
+
+    为什么需要：使用者发现真实录音里这两行几乎完全重叠
+        音高振荡 2.88–3.35s  峰值 0.639
+        音高滑移 2.93–3.1s   ↓3.35 半音 / 0.17 秒
+
+    根因：滑音拐弯处的过零率能到 10-14，高于 5 Hz 微颤的中位 8，
+    所以拐弯会被算成振荡。
+
+    实测合成音（0.17s 滑 3.35 半音）：振荡峰值 0.132，
+    比真微颤（0.822）低 6 倍——能分开，但会给读的人一个
+    「这里有轻微振荡」的错觉。
+
+    做法：不改变数值，只加标记。
+    需求原话二选一：「要么不报，要么标注可能来自滑移」。
+    选标注，因为不报会丢掉真实信息（滑移段里可能真有微颤）。
+    """
+    if not spans or not glides:
+        return spans
+    for sp in spans:
+        hits = []
+        for g in glides:
+            # 时间区间有重叠，或滑移的起止落在振荡时段内
+            if not (sp["end"] < g["start"] or sp["start"] > g["end"]):
+                hits.append(g)
+        if hits:
+            sp["note"] = ("这个时段和音高滑移重叠，峰值可能有部分来自滑音拐弯"
+                          "（滑音拐弯处过零率高，会被算成振荡）")
+            sp["overlapsGlides"] = [
+                {"start": g["start"], "end": g["end"],
+                 "semitones": g["semitones"], "direction": g["direction"]}
+                for g in hits
+            ]
+    return spans
+
+
 def _pitch_glides(st, times, f0, min_semitones=3.0, min_sec=0.12,
                    max_sec=1.2, step_sec=0.05):
     """找出单调的大幅音高移动（滑音）。
@@ -2934,6 +3246,12 @@ def segment_summary(a, times, min_voiced=0.15):
     # 滑音：单调的大幅音高移动。和振荡是**两条独立轨道**，可以重叠——
     # 一句话里完全可能先滑下去、滑到底再抖（人激动时就是这样）。
     out["pitchGlides"] = _pitch_glides(st, times, f0)
+
+    # 标注重叠（2026-11-28）：滑音拐弯的过零率高，会被算成振荡。
+    # 不改变数值，只加说明——数字给现象，判断留给读的人。
+    if out.get("pitchOscillationSpans") and out.get("pitchGlides"):
+        out["pitchOscillationSpans"] = mark_glide_overlap(
+            out["pitchOscillationSpans"], out["pitchGlides"])
     out["dbMedian"] = float(np.median(db)) if len(db) else 0.0
     out["dbMax"] = float(np.max(db)) if len(db) else 0.0
 
@@ -3136,6 +3454,25 @@ def write_markdown(path, summary, curves, meta):
     L.append("- 时长：%.2f 秒" % summary.get("duration", 0))
     L.append("- 基频参考（说话人自己的中位）：%.1f Hz" % summary.get("ref_hz", 0))
     L.append("")
+    # 一句话概览放最前面（2026-11-28）。
+    # 使用者说「不看 JSON，只看默认那几行」，所以必须在这儿。
+    _hl = summary.get("highlights") or []
+    if _hl:
+        L.append("## 值得先看的")
+        L.append("")
+        L.append("> 挑的是偏离正常范围最多的几个，不是绝对值最大的。")
+        L.append("")
+        for _i, _p in enumerate(_hl):
+            _v = _p.get("shown") or str(_p.get("value"))
+            if _i == 0:
+                L.append("- **%s %s** —— %s" % (_p["name"], _v, _p["how"]))
+            else:
+                L.append("- %s %s —— %s" % (_p["name"], _v, _p["how"]))
+        L.append("")
+        L.append("依据：" + "；".join(
+            "%s（%s）" % (_p["name"], _p["why"]) for _p in _hl[:3]))
+        L.append("")
+
     L.append("## 汇总")
     L.append("")
     L.append("- 浊音 %.0f%% · 清音（气声）%.0f%% · 静音 %.0f%%" % (
@@ -3233,6 +3570,10 @@ def write_markdown(path, summary, curves, meta):
     if segs:
         L.append("## 文本与韵律对照")
         L.append("")
+        # 免责说明放在表格之前，避免有人只看表不看注
+        if summary.get("transcriptCaveat"):
+            L.append("> ⚠️ " + summary["transcriptCaveat"])
+            L.append("")
         L.append("| 起 | 止 | 文本 | 基频 | 半音 | 微颤 |")
         L.append("|---|---|---|---|---|---|")
         for s in segs:
@@ -3393,6 +3734,17 @@ def main():
     #
     # 位置很重要：必须放在 suspectedNonSpeech 赋值**之后**。
     # 之前放在前面，白噪声读到的还是旧的 False，contentClass 报成了 speech。
+    # 转写的免责说明：只有真的出字时才带（没字的时候说「可能错」没意义）
+    if transcript and has_meaningful_text(transcript):
+        summary["transcriptCaveat"] = TRANSCRIPT_CAVEAT
+
+    # 一句话概览（2026-11-28）。
+    # 使用者反馈：「那 27 个数字我一个没看，只看 summary 里四五个。
+    # 没人告诉我该看哪几个」。
+    # 挑「偏离正常范围中点最多」的 3-4 个，不挑绝对值最大的——
+    # 那样 f0 永远排第一，只因为它数字大。
+    summary["highlights"] = pick_highlights(summary, 4)
+
     summary["contentClass"] = _classify_content(summary, transcript=transcript, transcript_status=transcript_status)
 
     # 背景音 / 人声 的时间定位。

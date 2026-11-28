@@ -1675,7 +1675,10 @@ const analyzeTool = {
         lines.push('')
         lines.push('【声音】')
         if (a.duration) lines.push('  时长 ' + Number(a.duration).toFixed(1) + ' 秒')
-        if (a.transcript) lines.push('  文本：' + String(a.transcript).slice(0, 200))
+        if (a.transcript) {
+    lines.push('  文本：' + String(a.transcript).slice(0, 200))
+    lines.push('  （自动识别，同音字可能错，引用前请核对音频）')
+  }
         if (a.contentClass && a.contentClass.kind !== 'speech') {
           lines.push('  ⚠ ' + a.contentClass.kind + '：' + (a.contentClass.note || ''))
         }
@@ -3672,6 +3675,15 @@ const prosodyAnalyzeTool = {
         lines.push('')
       }
       lines.push('韵律分析完成（' + value.prosodyId + '）：' + (s.duration || 0).toFixed(2) + ' 秒')
+    // 2026-11-28：一句话概览放最前。
+    // 使用者反馈「27 个数字一个没看，只看四五个，但没人告诉我该看哪几个」。
+    if (Array.isArray(s.highlights) && s.highlights.length) {
+      lines.push('')
+      lines.push('值得先看（挑的是偏离正常范围最多的，不是绝对值最大的）：')
+      for (const h of s.highlights) {
+        lines.push('  · ' + h.name + ' ' + (h.shown || h.value) + ' —— ' + h.how)
+      }
+    }
       lines.push('基频中位 ' + (s.f0Median || 0).toFixed(1) + ' Hz，音域 ' + (s.semitoneRange || 0).toFixed(1) + ' 半音')
       lines.push('浊音 ' + Math.round((s.voicedRatio || 0) * 100) + '% · 清音 ' + Math.round((s.unvoicedRatio || 0) * 100)
         + '% · 静音 ' + Math.round((s.silenceRatio || 0) * 100) + '%')
@@ -3705,7 +3717,14 @@ const prosodyAnalyzeTool = {
         }[value.transcriptStatus] || value.transcriptStatus
         lines.push('转写状态：' + statusText)
       }
-      if (value.transcript) lines.push('文本：' + value.transcript)
+      if (value.transcript) {
+      lines.push('文本：' + value.transcript)
+      // 2026-11-28：转写是自动识别的，同音字会错。
+      // 使用者反馈「我写东西的时候会直接引用转写」，所以每次都要提醒。
+      lines.push('  ⚠️ ' + (value.transcriptCaveat
+        || '转写为自动识别（SenseVoice），同音字、人名、专有名词可能错。'
+           + '不要当作可直接引用的原文——引用前请核对原始音频。'))
+    }
 
       // 内容类型：一个明确结论，替代两个字段自己猜
       // nonSpeech 的情况上面已经有过详细警告了，这里不重复
