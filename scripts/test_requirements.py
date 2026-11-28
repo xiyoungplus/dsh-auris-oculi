@@ -435,6 +435,114 @@ check("转写不截断", t_transcript_no_truncate)
 
 # ══════════════════════════════════════════════════════
 print()
+print("=== toolbox_analyze 支持 B 站链接（2026-11-28）===")
+
+
+def t_bili_allowed():
+    """不能再直接拒绝 B 站链接。
+
+    使用者：「我跑的六步里，只有这一步是在替两个工具之间的缝付账」
+    之前 toolbox_analyze 会抛错「B 站链接请用 video_summary」。
+    """
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+    if "B 站链接请用 video_summary" in idx:
+        return "还在拒绝 B 站链接"
+    if "const isBili" not in idx:
+        return "没有 isBili 判断"
+    return True
+
+
+def t_bili_predownload():
+    """B 站链接必须走预下载。
+
+    为什么：prosody.py 读不了 http（实测 decode_to_wav 无 urlopen），
+    video_watch.py 能下。所以要先下成本地文件。
+
+    2026-11-28 加强：原来只查日志字符串，变异成 `if (false)` 抓不住
+    （字符串还在）。改成验证**控制流**：
+        if (options.biliSource) 后面必须真的 spawn
+        必须设 downloadedPath
+        actualSource 必须读它
+    """
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+
+    # 1. 必须有 if (options.biliSource) 分支
+    i = idx.find("if (options.biliSource)")
+    if i < 0:
+        return "没有 biliSource 分支"
+
+    # 2. 分支体里必须真的 spawn（不是 if(false)）
+    # 找分支体的范围：到下一个同缩进的 }
+    body_start = idx.find("{", i)
+    if body_start < 0:
+        return "分支没有花括号体"
+    # 粗略取 3000 字符
+    body = idx[body_start:body_start + 3000]
+    if "spawn(PYTHON, dlArgs" not in body:
+        return "biliSource 分支里没有 spawn 下载"
+    if "if (false)" in idx[i - 5:i + 30]:
+        return "biliSource 分支被短路了"
+
+    # 3. 必须设 downloadedPath
+    if "job.downloadedPath = got" not in idx:
+        return "没有记 downloadedPath"
+
+    # 4. actualSource 必须读它
+    if "job.downloadedPath || source" not in idx:
+        return "actualSource 没读 downloadedPath"
+
+    return True
+
+
+def t_async_start():
+    """startAnalyze 必须是 async（要 await 下载）。"""
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+    if "async function startAnalyze" not in idx:
+        return "startAnalyze 不是 async"
+    if "await startAnalyze(" not in idx:
+        return "调用方没有 await"
+    return True
+
+
+def t_title_not_filename():
+    """回执标题不能只是文件名或 BV 号。
+
+    使用者：「今天回执里标题就是文件名，因为我喂的是本地文件。」
+    """
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+    # render 里应该优先用 value.title
+    if "const shownTitle = value.title" not in idx:
+        return "render 没有优先用 title"
+    # analyzeToolResult 应该提取 title
+    if "let title = null" not in idx:
+        return "analyzeToolResult 没有提取 title"
+    return True
+
+
+def t_title_in_schema():
+    """title / uploader 要在 schema 里声明。"""
+    idx = io.open(os.path.join(ROOT, "index.js"), encoding="utf-8").read()
+    i = idx.find("const analyzeTool = {")
+    if i < 0:
+        return "找不到 analyzeTool"
+    j = idx.find("async execute", i)
+    seg = idx[i:j]
+    bad = []
+    if "title: { oneOf" not in seg:
+        bad.append("title")
+    if "uploader: { oneOf" not in seg:
+        bad.append("uploader")
+    return True if not bad else "schema 缺：" + ", ".join(bad)
+
+
+check("B 站链接不再被拒绝", t_bili_allowed)
+check("走预下载（prosody 读不了 http）", t_bili_predownload)
+check("startAnalyze 是 async 且有 await", t_async_start)
+check("标题不是文件名", t_title_not_filename)
+check("title/uploader 在 schema 里", t_title_in_schema)
+
+# ══════════════════════════════════════════════════════
+print()
 print("=" * 74)
 if failures:
     print("%d 项失败：" % len(failures))

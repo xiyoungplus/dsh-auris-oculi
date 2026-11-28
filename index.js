@@ -1401,7 +1401,15 @@ function appendAnalyzeLog(job, chunk) {
  *
  * 画面要下载/解码，音频只要文件本身，所以音频通常更快出结果。
  */
-function startAnalyze(source, options = {}) {
+/**
+ * 启动一站式分析。
+ *
+ * 2026-11-28：改成 async。
+ * 原因：B 站链接需要先预下载（prosody 读不了 http，video_watch 能下），
+ * 下载是异步的。改 async 后调用方 await 一下就行，
+ * 而且只有一处调用（toolbox_analyze 的 execute，本身是 async）。
+ */
+async function startAnalyze(source, options = {}) {
   const id = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14) + '-' + randomUUID().slice(0, 8)
   const outDir = path.join(ANALYZE_ROOT, id)
   mkdirSync(outDir, { recursive: true })
@@ -1442,9 +1450,80 @@ function startAnalyze(source, options = {}) {
   pruneMap(analyzeJobs)
   writeAnalyzeMeta(job)
 
+  // ---- B 站链接：先预下载（2026-11-28）----
+  //
+  // 为什么需要这一步：
+  //   video_watch.py 能下 B 站视频，prosody.py 读不了 http。
+  //   所以要先把它变成本地文件，两条流水线才能都用。
+  //
+  // 为什么不用「先完整跑完 video 再跑 audio」：
+  //   那样音频要等视频分析完（几分钟），退化。
+  //   预下载只做「下载」这一件事，之后就并行。
+  //
+  // 复用 video_watch.py 而不是自己写下载：
+  //   它已经处理了元信息、下载缓存、分段下载。重写是浪费也是风险。
+  if (options.biliSource) {
+    const dlDir = videoDir
+    appendAnalyzeLog(job, '[analyze] B 站链接：先下载（两条流水线都要用这个文件）')
+    job.stage = '下载中'
+    const dlArgs = [
+      SCRIPT, String(options.biliSource),
+      '--outdir', dlDir,
+      // 只要下载：给它最小的分析任务（1 张拼图、1 秒）
+      '--max-sheets', '1',
+      '--frames-per-sheet', '1',
+      '--height', String(options.height || 1080),
+    ]
+    if (options.start) dlArgs.push('--start', String(options.start))
+    if (options.duration) dlArgs.push('--duration', String(options.duration))
+    const got = await new Promise((resolve) => {
+      let child
+      try {
+        child = spawn(PYTHON, dlArgs, {
+          cwd: ANALYZE_ROOT,
+          env: pythonEnv(modelEnvOverrides(options)),
+          windowsHide: true,
+        })
+      } catch (error) {
+        appendAnalyzeLog(job, '[analyze] 下载启动失败：' + String(error && error.message ? error.message : error))
+        resolve(null)
+        return
+      }
+      job.children.push(child)
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      let buf = ''
+      child.stdout.on('data', (chunk) => {
+        appendAnalyzeLog(job, chunk)
+        buf += String(chunk)
+      })
+      child.stderr.on('data', (chunk) => appendAnalyzeLog(job, chunk))
+      child.on('close', (code) => {
+        // video_watch 下完会写 video.mp4 在 outdir 里
+        const p = path.join(dlDir, 'video.mp4')
+        resolve(code === 0 && existsSync(p) ? p : null)
+      })
+      child.on('error', () => resolve(null))
+    })
+    if (got) {
+      appendAnalyzeLog(job, '[analyze] 下载完成：' + got)
+      job.downloadedPath = got
+    } else {
+      appendAnalyzeLog(job, '[analyze] 下载失败，两条流水线都无法继续')
+      job.status = 'error'
+      job.error = 'B 站视频下载失败（可能是链接失效、需要登录、或网络问题）'
+      job.endedAt = Date.now()
+      writeAnalyzeMeta(job)
+      return job
+    }
+  }
+
+  // 两条流水线共用的输入：B 站链接用下载好的本地文件，其他直接用
+  const actualSource = job.downloadedPath || source
+
   // ---- 音频流水线 ----
   if (!job.audioSkipped) {
-    const audioArgs = [PROSODY_SCRIPT, source, '--outdir', audioDir]
+    const audioArgs = [PROSODY_SCRIPT, actualSource, '--outdir', audioDir]
     if (options.start) audioArgs.push('--start', String(options.start))
     if (options.duration) audioArgs.push('--duration', String(options.duration))
     if (options.noTranscribe) audioArgs.push('--no-transcribe')
@@ -1472,7 +1551,7 @@ function startAnalyze(source, options = {}) {
 
   // ---- 视频流水线 ----
   if (!job.videoSkipped) {
-    const videoArgs = [SCRIPT, source, '--outdir', videoDir, '--model', String(resolveModel(options.model))]
+    const videoArgs = [SCRIPT, actualSource, '--outdir', videoDir, '--model', String(resolveModel(options.model))]
     if (options.summary !== false) videoArgs.push('--summary')
     if (options.start) videoArgs.push('--start', String(options.start))
     if (options.end) videoArgs.push('--end', String(options.end))
@@ -1577,12 +1656,27 @@ function analyzeToolResult(job) {
   const audio = readAnalyzeAudio(job)
   const videoReport = readAnalyzeVideoReport(job)
   const summary = (audio && audio.summary) || null
+
+  // 2026-11-28：从视频报告里提标题和 UP 主。
+  // 使用者反馈「回执里标题就是文件名」——因为喂本地文件时没有元信息。
+  // 现在支持 B 站链接了，标题该来自视频本身。
+  let title = null
+  let uploader = null
+  if (videoReport) {
+    const tm = videoReport.match(/^#\s*《(.+?)》/m)
+    if (tm) title = tm[1].trim()
+    const um = videoReport.match(/^-\s*UP 主：(.+)$/m)
+    if (um) uploader = um[1].trim()
+  }
+
   return {
     ok: job.status === 'done',
     analyzeId: job.id,
     status: job.status,
     stage: job.stage || null,
     source: job.source,
+    title,
+    uploader,
     // 声音侧
     audio: audio ? {
       transcript: audio.transcript || null,
@@ -1615,13 +1709,17 @@ const analyzeTool = {
   description:
     '一站式分析一个视频或音频文件：同时做画面（逐帧观看 + 摘要）和声音（转写 + 韵律 + 变化点 + 说话人），最后给一份合并结果。'
     + '适合「这个视频讲了什么、什么语气、哪里变了」这类一次问全的需求，不用分别调视频和音频工具。'
-    + 'source 支持本地路径、file:// 或直链；B 站链接请用 video_summary（它有下载和视频元信息）。'
+    + 'source 支持本地路径、file://、直链，以及 B 站链接（会先自动下载，不需要你先用 video_summary 下）。'
     + '两条流水线并行跑，声音通常更快出结果。'
     + '可以用 only 指定只做画面或只做声音。',
   parameters: {
     type: 'object',
     properties: {
-      source: { type: 'string', description: '本地文件路径、file:// 或直链。' },
+      source: {
+    type: 'string',
+    description: '本地文件路径、file://、直链，或 B 站链接/BV 号。'
+      + 'B 站链接会先自动下载（约几秒到几分钟，看视频长度），然后两条流水线并行。'
+  },
       only: {
         type: 'string',
         enum: ['both', 'video', 'audio'],
@@ -1656,6 +1754,9 @@ const analyzeTool = {
         status: { type: 'string' },
         stage: { oneOf: [{ type: 'string' }, { type: 'null' }] },
         source: { type: 'string' },
+          // 2026-11-28：视频标题和 UP 主（从报告里提的）
+          title: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+          uploader: { oneOf: [{ type: 'string' }, { type: 'null' }] },
         audio: { oneOf: [{ type: 'object' }, { type: 'null' }] },
         video: { oneOf: [{ type: 'object' }, { type: 'null' }] },
         outDir: { type: 'string' },
@@ -1669,7 +1770,14 @@ const analyzeTool = {
       if (!value.ok) {
         return [{ type: 'text', text: '分析未完成（' + String(value.status || '') + '）：' + String(value.error || value.note || '') }]
       }
-      const lines = ['分析完成：' + (path.basename(value.source) || value.analyzeId)]
+      // 2026-11-28：标题优先用视频本身的，不是文件名。
+      // 之前只显示 path.basename(source)，B 站链接就显示成 BV 号，
+      // 本地文件显示成 xxx.mp4。
+      const shownTitle = value.title
+        || (value.source && !/^https?:/i.test(value.source) ? path.basename(value.source) : null)
+        || value.analyzeId
+      const lines = ['分析完成：' + shownTitle]
+      if (value.uploader) lines.push('UP 主：' + value.uploader)
       const a = value.audio
       if (a) {
         lines.push('')
@@ -1709,15 +1817,20 @@ const analyzeTool = {
     if (parsed.kind === 'local' && !existsSync(parsed.path)) {
       throw new Error('toolbox_analyze: 找不到文件 ' + parsed.path)
     }
-    if (parsed.kind === 'url' && /bilibili\.com|b23\.tv/i.test(parsed.url)) {
-      throw new Error('toolbox_analyze: B 站链接请用 video_summary（它有下载和视频元信息）；' +
-        '本工具用于本地文件或直链')
-    }
+    // 2026-11-28：B 站链接现在直接支持。
+    //
+    // 之前这里抛错，让人自己去 video_summary 下、再喂本地文件——
+    // 使用者反馈：「我跑的六步里，只有这一步是在替两个工具之间的缝付账」。
+    //
+    // 现在内部先预下载，再跑两条流水线（见 startAnalyze 里的 biliSource 分支）。
+    const isBili = parsed.kind === 'url' && /bilibili\.com|b23\.tv/i.test(parsed.url)
     const running = activeAnalyze()
     if (running) throw new Error('toolbox_analyze: 已有分析在跑（' + running.id + '），请用 toolbox_job 查询')
 
     const only = String((args && args.only) || 'both')
-    const job = startAnalyze(parsed.kind === 'local' ? parsed.path : parsed.url, {
+    const job = await startAnalyze(parsed.kind === 'local' ? parsed.path : parsed.url, {
+      // B 站链接需要预下载（prosody 读不了 http，video_watch 能下）
+      biliSource: isBili ? parsed.url : null,
       video: only !== 'audio',
       audio: only !== 'video',
       model: args && args.model,
